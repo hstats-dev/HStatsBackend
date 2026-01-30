@@ -162,6 +162,12 @@ function getAllCountries() {
     return countries;
 }
 
+function getServersUsingPlugin(pluginUUID) {
+    const stmt = db.prepare("SELECT * FROM servers WHERE plugins LIKE ?");
+    const rows = stmt.all(`%${pluginUUID}%`);
+    return rows;
+}
+
 export {
     addOrUpdateServer,
     addPluginToServer,
@@ -171,5 +177,6 @@ export {
     getAllOSNames,
     getAllJavaVersions,
     getAllCountries,
-    checkInActiveServers
+    checkInActiveServers,
+    getServersUsingPlugin
 };
