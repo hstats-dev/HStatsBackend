@@ -14,12 +14,22 @@ db.exec(`
         password_salt TEXT,
         api_key_hash TEXT,
         api_key_prefix TEXT,
+        plugin_access TEXT DEFAULT '',
         is_disabled INTEGER DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER,
         last_login INTEGER
     );
 `);
+
+function ensureColumn(table, column, definition) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map(row => row.name);
+    if (!columns.includes(column)) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+    }
+}
+
+ensureColumn("accounts", "plugin_access", "TEXT DEFAULT ''");
 
 function getEnvKey(name, bytes) {
     const value = process.env[name];
@@ -98,12 +108,31 @@ function createAccount({ email, password }) {
     const id = crypto.randomUUID();
 
     const insertStmt = db.prepare(`
-        INSERT INTO accounts (id, email_enc, email_hash, password_hash, password_salt, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO accounts (id, email_enc, email_hash, password_hash, password_salt, plugin_access, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    insertStmt.run(id, encryptString(emailNorm), emailHash, passwordHash, salt, now, now);
+    insertStmt.run(id, encryptString(emailNorm), emailHash, passwordHash, salt, "", now, now);
 
     return getAccountById(id);
+}
+
+function addPluginToUser(accountId, pluginUUID) {
+    const row = db.prepare("SELECT plugin_access FROM accounts WHERE id = ?").get(accountId);
+    let access = row.plugin_access ? row.plugin_access.split(",") : [];
+    if (!access.includes(pluginUUID)) {
+        access.push(pluginUUID);
+        const updatedAccess = access.join(",");
+        const updateStmt = db.prepare("UPDATE accounts SET plugin_access = ? WHERE id = ?");
+        updateStmt.run(updatedAccess, accountId);
+    }
+}
+
+function getPluginsAccess(accountId) {
+    const row = db.prepare("SELECT plugin_access FROM accounts WHERE id = ?").get(accountId);
+    if (!row || !row.plugin_access) {
+        return [];
+    }
+    return row.plugin_access.split(",");
 }
 
 function getAccountById(id) {
@@ -151,24 +180,9 @@ function toSafeAccount(accountRow) {
     };
 }
 
-function rotateApiKey(accountId) {
-    const apiKey = crypto.randomBytes(32).toString("base64url");
-    const apiKeyHash = crypto.createHash("sha256").update(apiKey).digest("hex");
-    const apiKeyPrefix = apiKey.slice(0, 8);
-    const now = Math.floor(Date.now() / 1000);
-    db.prepare("UPDATE accounts SET api_key_hash = ?, api_key_prefix = ?, updated_at = ? WHERE id = ?")
-        .run(apiKeyHash, apiKeyPrefix, now, accountId);
-    return { apiKey, apiKeyPrefix };
-}
-
-function verifyApiKey(apiKey) {
-    const apiKeyHash = crypto.createHash("sha256").update(apiKey).digest("hex");
-    const row = db.prepare("SELECT * FROM accounts WHERE api_key_hash = ?").get(apiKeyHash);
-    return row || null;
-}
-
 export {
     createAccount,
+    addPluginToUser,
     getAccountById,
     getAccountByEmail,
     verifyPassword,
@@ -176,6 +190,5 @@ export {
     getSessionMaxAgeMs,
     touchLastLogin,
     toSafeAccount,
-    rotateApiKey,
-    verifyApiKey
+    getPluginsAccess
 };

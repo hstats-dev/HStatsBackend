@@ -30,6 +30,11 @@ function addOrUpdatePlugin(uuid, name, version) {
     }
 }
 
+function deletePlugin(uuid) {
+    const deleteStmt = db.prepare("DELETE FROM plugins WHERE uuid = ?");
+    deleteStmt.run(uuid);
+}
+
 function getPlugin(uuid) {
     const stmt = db.prepare("SELECT * FROM plugins WHERE uuid = ?");
     return stmt.get(uuid);
@@ -37,5 +42,6 @@ function getPlugin(uuid) {
 
 export {
     addOrUpdatePlugin,
+    deletePlugin,
     getPlugin
 }

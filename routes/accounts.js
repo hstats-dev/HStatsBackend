@@ -1,5 +1,6 @@
 import express from "express";
-import { createAccount, getAccountByEmail, getAccountById, getSessionMaxAgeMs, rotateApiKey, toSafeAccount, touchLastLogin, updatePassword, verifyPassword } from "../databases/accountsdb.js";
+import { createAccount, getAccountByEmail, getSessionMaxAgeMs, toSafeAccount, touchLastLogin, updatePassword, verifyPassword } from "../databases/accountsdb.js";
+import requireSession from "../middleware/requireSession.js";
 
 const router = express.Router();
 
@@ -9,18 +10,6 @@ function validateEmail(email) {
 
 function validatePassword(password) {
     return typeof password === "string" && password.length >= 8 && password.length <= 128;
-}
-
-function requireSession(req, res, next) {
-    if (!req.session?.accountId) {
-        return res.status(401).json({ error: "Not authenticated" });
-    }
-    const account = getAccountById(req.session.accountId);
-    if (!account || account.is_disabled) {
-        return res.status(401).json({ error: "Not authenticated" });
-    }
-    req.account = account;
-    return next();
 }
 
 router.post("/register", (req, res) => {
@@ -74,11 +63,6 @@ router.post("/logout", requireSession, (req, res) => {
     req.session.destroy(() => {
         res.json({ status: "success" });
     });
-});
-
-router.post("/rotate-api-key", requireSession, (req, res) => {
-    const apiKey = rotateApiKey(req.account.id);
-    res.json({ api_key: apiKey.apiKey, api_key_prefix: apiKey.apiKeyPrefix });
 });
 
 router.post("/change-password", requireSession, (req, res) => {

@@ -1,5 +1,5 @@
 import express from 'express';
-import { addOrUpdateServer, addPluginToServer } from '../databases/serversdb.js';
+import { addOrUpdateServer, addPluginToServer, getServer } from '../databases/serversdb.js';
 
 const router = express.Router();
 
@@ -26,6 +26,8 @@ router.post("/update-server", async (req, res) => {
 
 // Endpoint sent by the server to add a plugin to its list
 router.post("/add-plugin", (req, res) => {
+    console.log(JSON.stringify(req.body));
+
     if (!req.body.server_uuid)
         return res.status(400).json({ error: "Missing server_uuid parameter" });
     if (!req.body.plugin_uuid)
@@ -33,10 +35,16 @@ router.post("/add-plugin", (req, res) => {
     if (!req.body.version)
         req.body.version = "unknown";
 
+    if (getServer(req.body.server_uuid) === undefined) {
+        console.log("Server not found: " + req.body.server_uuid);
+        return res.status(404).json({ error: "Server not found" });
+    }
+
     if (addPluginToServer(req.body.server_uuid, req.body.plugin_uuid, req.body.version)) {
-        // TODO: Add logic for adding data about the plugin itself
+        console.log("Added plugin " + req.body.plugin_uuid + " to server " + req.body.server_uuid);
         res.json({ status: "success" });
     } else {
+        console.log("Plugin " + req.body.plugin_uuid + " already added to server " + req.body.server_uuid);
         res.status(400).json({ error: "Plugin already added" });
     }
 });

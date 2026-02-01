@@ -1,6 +1,7 @@
 import express from "express";
 import session from "express-session";
 import SQLiteStore from "connect-sqlite3";
+import cors from "cors";
 import requestIp from "request-ip";
 import { configDotenv } from "dotenv";
 import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
@@ -41,6 +42,12 @@ app.use(session({
     }
 }));
 
+const allowedOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
+app.use(cors({
+    origin: allowedOrigin,
+    credentials: true
+}));
+
 app.use("/api/account", accountRoutes);
 app.use("/api/plugin", pluginRoutes);
 app.use("/api/server", serverRoutes);
@@ -59,6 +66,11 @@ app.get("/api/server-data", (req, res) => {
 app.listen(3000, () => {
     console.log(`Server is running on port 3000`);
 });
+
+if (!process.env.SERVER_ALIVE_CHECK_INTERVAL || isNaN(process.env.SERVER_ALIVE_CHECK_INTERVAL)) {
+    console.warn("SERVER_ALIVE_CHECK_INTERVAL is not set or is not a number, defaulting to 5 minutes");
+    process.env.SERVER_ALIVE_CHECK_INTERVAL = "5";
+}
 
 // Periodically check for inactive servers, while we are at it we update player count
 // cause why not do it here!

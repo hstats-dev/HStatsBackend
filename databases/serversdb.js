@@ -2,6 +2,7 @@ import betterSQL from "better-sqlite3";
 import axios from "axios";
 import { configDotenv } from "dotenv";
 import { response } from "express";
+import { prunePluginDailyStats, upsertPluginDailyStats } from "./pluginstatsdb.js";
 configDotenv();
 
 // Plugin Format: pluginUUID@version (version is optional)
@@ -35,7 +36,7 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
             country = response.data.location.country_code2 || "Unknown";
         })
         .catch(error => {
-            console.warn("Error fetching geolocation data for server (" + error.response.data.message + ") Using 'Unknown' as country.");
+            console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
         }).finally(() => {
             const insertStmt = db.prepare("INSERT INTO servers (uuid, players_online, os_name, os_version, java_version, core_count, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
             insertStmt.run(uuid, playerCount, osName, osVersion, javaVersion, coreCount, country);
@@ -51,7 +52,6 @@ function addPluginToServer(uuid, pluginUUID, version = "unknown") {
     let plugins = row ? row.plugins ? row.plugins.split(",") : [] : [];
     if (!plugins.includes(pluginUUID + (version ? `@${version}` : ""))) {
         plugins.push(pluginUUID + (version ? `@${version}` : ""));
-        
         const updatedPlugins = plugins.join(",");
         const updateStmt = db.prepare("UPDATE servers SET plugins = ? WHERE uuid = ?");
         const result = updateStmt.run(updatedPlugins, uuid);
@@ -71,7 +71,25 @@ function getServer(uuid) {
     return stmt.get(uuid);
 }
 
+// important function used to update data and clean up inactive servers
 function checkInActiveServers() {
+    const servers = db.prepare("SELECT * FROM servers").all();
+    servers.forEach(server => {
+        const plugins = server.plugins ? server.plugins.split(",") : [];
+        plugins.forEach(pluginEntry => {
+            const [pluginUUID, version] = pluginEntry.split("@");
+            const serversUsingPlugin = getServersUsingPlugin(pluginUUID);
+            let totalPlayers = 0;
+            serversUsingPlugin.forEach(s => {
+                totalPlayers += s.players_online;
+            });
+            upsertPluginDailyStats(pluginUUID, serversUsingPlugin.length, totalPlayers);
+        });
+    });
+
+    // remove plugin stat data thats older than 90d
+    prunePluginDailyStats();
+
     // Remove servers that haven't updated within the timeout period
     const timeoutMinutes = parseFloat(process.env.SERVER_ALIVE_TIMEOUT);
     const stmt = db.prepare("DELETE FROM servers WHERE last_updated < datetime('now', ?)");
@@ -172,6 +190,7 @@ export {
     addOrUpdateServer,
     addPluginToServer,
     removeServer,
+    getServer,
     getTotalPlayersOnline,
     getTotalServers,
     getAllOSNames,
