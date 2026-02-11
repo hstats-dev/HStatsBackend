@@ -1,19 +1,20 @@
 import express from 'express';
 import {v4 as uuidv4} from 'uuid';
 import { getServersUsingPlugin } from '../databases/serversdb.js';
-import { addOrUpdatePlugin, deletePlugin, getPlugin } from '../databases/plugindb.js';
+import { addOrUpdatePlugin, deletePlugin, getListOfPlugins, getPlugin } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
-import { addPluginToUser, getPluginsAccess } from '../databases/accountsdb.js';
+import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
 import { getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
+import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 
 const router = express.Router();
 
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
-    const { name, version } = req.body;
+    const { name } = req.body;
 
-    if (!name || !version) {
-        return res.status(400).json({ error: "Missing name or version field" });
+    if (!name) {
+        return res.status(400).json({ error: "Missing name field" });
     }
 
     let pluginUUID = uuidv4();
@@ -21,8 +22,11 @@ router.post("/add-plugin", requireSession, (req, res) => {
         pluginUUID = uuidv4();
     }
 
-    addOrUpdatePlugin(pluginUUID, name, version);
+    addOrUpdatePlugin(pluginUUID, name);
     addPluginToUser(req.account.id, pluginUUID);
+    addToRecentActivity(MessageType.MOD_REGISTERED, {
+        mod_name: name,
+    });
     res.status(201).json({ plugin_uuid: pluginUUID });
 });
 
@@ -48,10 +52,43 @@ router.post("/delete-plugin", requireSession, (req, res) => {
     res.status(200).json({ message: "Plugin deleted successfully" });
 });
 
+router.get("/list-plugins", (req, res) => {
+    const searchTerm = req.query.search || "";
+    const maxResults = Math.min(parseInt(req.query.max) || 50, 50);
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const plugins = getListOfPlugins(searchTerm).slice((page - 1) * maxResults, page * maxResults);
+    const response = {};
+    plugins.forEach(plugin => {
+        response[plugin.uuid] = {
+            plugin_info: plugin,
+            servers_using: getServersUsingPlugin(plugin.uuid).length,
+            total_players: getServersUsingPlugin(plugin.uuid).reduce((sum, server) => sum + server.players_online, 0),
+            daily_stats: getPluginDailyStatsLastDays(plugin.uuid),
+            developer_info: (() => {
+                const account = getAccountThatOwnsPlugin(plugin.uuid);
+                if (account) {
+                    return {
+                        github_link: account.github_link || "",
+                        curseforge_link: account.curseforge_link || ""
+                    };
+                } else {
+                    return null;
+                }
+            })(),
+            pages: Math.ceil(getListOfPlugins(searchTerm).length / maxResults)
+        };
+    });
+    res.status(200).json({ plugins: response });
+});
+
 router.get("/plugin-info/:plugin_uuid", (req, res) => {
     if (!req.params.plugin_uuid)
         return res.status(400).json({ error: "Missing plugin_uuid parameter" });
 
+    const plugin = getPlugin(req.params.plugin_uuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
     const servers = getServersUsingPlugin(req.params.plugin_uuid);
 
     let totalServers = servers.length;
@@ -105,6 +142,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
     });
 
     res.status(200).json({
+        name: plugin.name,
         total_servers: totalServers,
         total_players: totalPlayers,
         history: getPluginDailyStatsLastDays(req.params.plugin_uuid),

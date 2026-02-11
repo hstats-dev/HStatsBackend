@@ -5,10 +5,12 @@ import cors from "cors";
 import requestIp from "request-ip";
 import { configDotenv } from "dotenv";
 import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
-import { getSessionMaxAgeMs } from "./databases/accountsdb.js";
+import { getSessionMaxAgeMs, getTotalAccounts } from "./databases/accountsdb.js";
 import pluginRoutes from "./routes/plugins.js";
 import accountRoutes from "./routes/accounts.js";
 import serverRoutes from "./routes/servers.js";
+import { getTotalPlugins } from "./databases/plugindb.js";
+import { getRecentActivity } from "./databases/liveActivity.js";
 configDotenv();
 
 const app = express();
@@ -21,6 +23,8 @@ let onlineServers = getTotalServers();
 let osNames = getAllOSNames();
 let javaVersions = getAllJavaVersions();
 let countries = getAllCountries();
+let userCount = getTotalAccounts();
+let pluginCount = getTotalPlugins();
 
 if (process.env.PRODUCTION === "true")
     app.set("trust proxy", 1);
@@ -59,8 +63,15 @@ app.get("/api/server-data", (req, res) => {
         online_servers: onlineServers,
         os_names: osNames,
         java_versions: javaVersions,
-        countries: countries
+        countries: countries,
+        user_count: userCount,
+        plugin_count: pluginCount
     });
+});
+
+app.get("/api/recent-activity", (req, res) => {
+    const recentActivity = getRecentActivity();
+    res.status(200).json({ recentActivity });
 });
 
 app.listen(3000, () => {
@@ -81,5 +92,7 @@ setInterval(() => {
     osNames = getAllOSNames();
     javaVersions = getAllJavaVersions();
     countries = getAllCountries();
+    userCount = getTotalAccounts();
+    pluginCount = getTotalPlugins();
     console.log(`Currently ${onlineServers} online servers with ${onlinePlayers} total players.`);
 }, process.env.SERVER_ALIVE_CHECK_INTERVAL * 60 * 1000); // minutes

@@ -12,13 +12,13 @@ db.exec(`
         email_hash TEXT UNIQUE,
         password_hash TEXT,
         password_salt TEXT,
-        api_key_hash TEXT,
-        api_key_prefix TEXT,
         plugin_access TEXT DEFAULT '',
         is_disabled INTEGER DEFAULT 0,
         created_at INTEGER,
         updated_at INTEGER,
-        last_login INTEGER
+        last_login INTEGER,
+        github_link TEXT DEFAULT '',
+        curseforge_link TEXT DEFAULT ''
     );
 `);
 
@@ -30,6 +30,8 @@ function ensureColumn(table, column, definition) {
 }
 
 ensureColumn("accounts", "plugin_access", "TEXT DEFAULT ''");
+ensureColumn("accounts", "github_link", "TEXT");
+ensureColumn("accounts", "curseforge_link", "TEXT");
 
 function getEnvKey(name, bytes) {
     const value = process.env[name];
@@ -135,6 +137,22 @@ function getPluginsAccess(accountId) {
     return row.plugin_access.split(",");
 }
 
+function setGithubLink(accountId, githubLink) {
+    const updateStmt = db.prepare("UPDATE accounts SET github_link = ? WHERE id = ?");
+    updateStmt.run(githubLink, accountId);
+}
+
+function setCurseforgeLink(accountId, curseforgeLink) {
+    const updateStmt = db.prepare("UPDATE accounts SET curseforge_link = ? WHERE id = ?");
+    updateStmt.run(curseforgeLink, accountId);
+}
+
+function getAccountThatOwnsPlugin(pluginUUID) {
+    const stmt = db.prepare("SELECT * FROM accounts WHERE plugin_access LIKE ?");
+    const likePattern = `%${pluginUUID}%`;
+    return stmt.get(likePattern);
+}
+
 function getAccountById(id) {
     return db.prepare("SELECT * FROM accounts WHERE id = ?").get(id);
 }
@@ -157,6 +175,11 @@ function updatePassword(accountId, newPassword) {
         .run(passwordHash, salt, now, accountId);
 }
 
+function getTotalAccounts() {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM accounts").get();
+    return row ? row.count : 0;
+}
+
 function getSessionMaxAgeMs() {
     return SESSION_TTL_DAYS * 24 * 60 * 60 * 1000;
 }
@@ -167,16 +190,27 @@ function touchLastLogin(accountId) {
 }
 
 function toSafeAccount(accountRow) {
-    if (!accountRow) {
+    if (!accountRow)
         return null;
-    }
     return {
         id: accountRow.id,
         email: accountRow.email_enc ? decryptString(accountRow.email_enc) : "",
+        plugin_access: accountRow.plugin_access,
         created_at: accountRow.created_at,
         updated_at: accountRow.updated_at,
         last_login: accountRow.last_login,
-        api_key_prefix: accountRow.api_key_prefix || ""
+        github_link: accountRow.github_link || "",
+        curseforge_link: accountRow.curseforge_link || ""
+    };
+}
+
+function toPublicAccount(accountRow) {
+    if (!accountRow)
+        return null;
+    return {
+        id: accountRow.id,
+        github_link: accountRow.github_link || "",
+        curseforge_link: accountRow.curseforge_link || ""
     };
 }
 
@@ -189,6 +223,11 @@ export {
     updatePassword,
     getSessionMaxAgeMs,
     touchLastLogin,
+    getTotalAccounts,
     toSafeAccount,
-    getPluginsAccess
+    toPublicAccount,
+    getPluginsAccess,
+    setGithubLink,
+    setCurseforgeLink,
+    getAccountThatOwnsPlugin
 };

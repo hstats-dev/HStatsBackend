@@ -13,20 +13,27 @@ db.exec(`
     );
 `);
 
-function addOrUpdatePlugin(uuid, name, version) {
+function addOrUpdatePlugin(uuid, name) {
     const getStmt = db.prepare("SELECT * FROM plugins WHERE uuid = ?");
     const row = getStmt.get(uuid);
     if (row) {
-        let versions = row.versions ? row.versions.split(",") : [];
-        if (!versions.includes(version)) {
-            versions.push(version);
-        }
-        const updatedVersions = versions.join(",");
+        const updatedVersions = typeof row.versions === "string" ? row.versions : "";
         const updateStmt = db.prepare("UPDATE plugins SET versions = ?, name = ? WHERE uuid = ?");
         updateStmt.run(updatedVersions, name, uuid);
     } else {
         const insertStmt = db.prepare("INSERT INTO plugins (uuid, versions, name) VALUES (?, ?, ?)");
-        insertStmt.run(uuid, version, name);
+        insertStmt.run(uuid, "", name);
+    }
+}
+
+function getListOfPlugins(searchTerm = "") {
+    let stmt;
+    if (searchTerm) {
+        stmt = db.prepare("SELECT * FROM plugins WHERE name LIKE ? ORDER BY added_on DESC");
+        return stmt.all(`%${searchTerm}%`);
+    } else {
+        stmt = db.prepare("SELECT * FROM plugins ORDER BY added_on DESC");
+        return stmt.all();
     }
 }
 
@@ -40,8 +47,15 @@ function getPlugin(uuid) {
     return stmt.get(uuid);
 }
 
+function getTotalPlugins() {
+    const row = db.prepare("SELECT COUNT(*) AS count FROM plugins").get();
+    return row ? row.count : 0;
+}
+
 export {
     addOrUpdatePlugin,
     deletePlugin,
-    getPlugin
+    getPlugin,
+    getTotalPlugins,
+    getListOfPlugins
 }

@@ -1,5 +1,5 @@
 import express from "express";
-import { createAccount, getAccountByEmail, getSessionMaxAgeMs, toSafeAccount, touchLastLogin, updatePassword, verifyPassword } from "../databases/accountsdb.js";
+import { createAccount, getAccountByEmail, getAccountThatOwnsPlugin, getSessionMaxAgeMs, setCurseforgeLink, setGithubLink, toPublicAccount, toSafeAccount, touchLastLogin, updatePassword, verifyPassword } from "../databases/accountsdb.js";
 import requireSession from "../middleware/requireSession.js";
 
 const router = express.Router();
@@ -53,6 +53,36 @@ router.post("/login", (req, res) => {
     req.session.cookie.maxAge = getSessionMaxAgeMs();
     touchLastLogin(account.id);
     res.json({ account: toSafeAccount(account) });
+});
+
+router.post("/apply-github-link", requireSession, (req, res) => {
+    const { github_link } = req.body || {};
+    if (typeof github_link !== "string" || !github_link.startsWith("https://github.com/")) {
+        return res.status(400).json({ error: "Invalid GitHub link" });
+    }
+    setGithubLink(req.account.id, github_link);
+    res.json({ status: "success" });
+});
+
+router.post("/apply-curseforge-link", requireSession, (req, res) => {
+    const { curseforge_link } = req.body || {};
+    if (typeof curseforge_link !== "string" || !curseforge_link.startsWith("https://www.curseforge.com/members/")) {
+        return res.status(400).json({ error: "Invalid CurseForge link" });
+    }
+    setCurseforgeLink(req.account.id, curseforge_link);
+    res.json({ status: "success" });
+});
+
+router.get("/get-plugin-ownership/:plugin_uuid", requireSession, (req, res) => {
+    const { plugin_uuid } = req.params || {};
+    if (typeof plugin_uuid !== "string") {
+        return res.status(400).json({ error: "Invalid plugin UUID" });
+    }
+    const account = getAccountThatOwnsPlugin(plugin_uuid);
+    if (!account) {
+        return res.status(404).json({ error: "No account owns this plugin" });
+    }
+    res.json({ account: toPublicAccount(account) });
 });
 
 router.get("/me", requireSession, (req, res) => {

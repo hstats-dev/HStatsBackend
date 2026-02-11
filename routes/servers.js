@@ -1,5 +1,7 @@
 import express from 'express';
 import { addOrUpdateServer, addPluginToServer, getServer } from '../databases/serversdb.js';
+import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
+import { getPlugin } from '../databases/plugindb.js';
 
 const router = express.Router();
 
@@ -20,7 +22,12 @@ router.post("/update-server", async (req, res) => {
 
     const ip = req.clientIp;
 
-    await addOrUpdateServer(req.body.server_uuid, ip, req.body.players_online, req.body.os_name, req.body.os_version, req.body.java_version, parseInt(req.body.cores))
+    await addOrUpdateServer(req.body.server_uuid, ip, req.body.players_online, req.body.os_name, req.body.os_version, req.body.java_version, parseInt(req.body.cores));
+    addToRecentActivity(MessageType.SERVER_HEARTBEAT, {
+        // player count, server uuid
+        player_count: req.body.players_online,
+        server_uuid: req.body.server_uuid.substring(0, 6)
+    });
     res.status(200).json({ status: "success" });
 });
 
@@ -32,16 +39,20 @@ router.post("/add-plugin", (req, res) => {
         return res.status(400).json({ error: "Missing server_uuid parameter" });
     if (!req.body.plugin_uuid)
         return res.status(400).json({ error: "Missing plugin_uuid parameter" });
-    if (!req.body.version)
-        req.body.version = "unknown";
+    if (!req.body.plugin_version)
+        req.body.plugin_version = "Unknown";
 
     if (getServer(req.body.server_uuid) === undefined) {
         console.log("Server not found: " + req.body.server_uuid);
         return res.status(404).json({ error: "Server not found" });
     }
 
-    if (addPluginToServer(req.body.server_uuid, req.body.plugin_uuid, req.body.version)) {
-        console.log("Added plugin " + req.body.plugin_uuid + " to server " + req.body.server_uuid);
+    if (addPluginToServer(req.body.server_uuid, req.body.plugin_uuid, req.body.plugin_version)) {
+        console.log("Added plugin " + req.body.plugin_uuid + " to server " + req.body.server_uuid + " with version " + req.body.plugin_version);
+        addToRecentActivity(MessageType.MOD_REGISTERED_TO_SERVER, {
+            mod_name: getPlugin(req.body.plugin_uuid)?.name || req.body.plugin_uuid.substring(0, 6),
+            server_uuid: req.body.server_uuid.substring(0, 6)
+        });
         res.json({ status: "success" });
     } else {
         console.log("Plugin " + req.body.plugin_uuid + " already added to server " + req.body.server_uuid);
