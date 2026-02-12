@@ -46,7 +46,7 @@ app.use(session({
     }
 }));
 
-const allowedOrigin = process.env.CORS_ORIGIN || "http://localhost:5173";
+const allowedOrigin = "https://hstats.dev" || "http://localhost:5173";
 app.use(cors({
     origin: allowedOrigin,
     credentials: true
