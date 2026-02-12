@@ -29,13 +29,16 @@ let pluginCount = getTotalPlugins();
 if (process.env.PRODUCTION === "true")
     app.set("trust proxy", 1);
 
+if (!process.env.SESSION_SECRET) {
+    console.warn("SESSION_SECRET is not set, using a default value. This should be changed in production!");
+}
 const SQLiteStoreSession = SQLiteStore(session);
 app.use(session({
     store: new SQLiteStoreSession({
         db: process.env.SESSIONS_DB || "sessions.db",
         dir: process.env.SESSIONS_DIR || "databases"
     }),
-    secret: process.env.SESSION_SECRET || "change-me",
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -46,7 +49,7 @@ app.use(session({
     }
 }));
 
-const allowedOrigin = "https://hstats.dev" || "http://localhost:5173";
+const allowedOrigin = (process.env.PRODUCTION == "true" ? "https://hstats.dev" : "http://localhost:5173");
 app.use(cors({
     origin: allowedOrigin,
     credentials: true

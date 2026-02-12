@@ -2,14 +2,15 @@ import express from 'express';
 import { addOrUpdateServer, addPluginToServer, getServer } from '../databases/serversdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { getPlugin } from '../databases/plugindb.js';
+import { serverIngestRateLimiter } from '../middleware/rateLimiters.js';
 
 const router = express.Router();
 
 // Endpoint to add a new server, this is called when a server first comes online
-router.post("/update-server", async (req, res) => {
+router.post("/update-server", serverIngestRateLimiter, async (req, res) => {
     if (!req.body.server_uuid)
         return res.status(400).json({ error: "Missing server_uuid parameter" });
-    if (req.body.players_online === undefined || req.body.players_online === null)
+    if (req.body.players_online === undefined || req.body.players_online === null || isNaN(req.body.players_online) || parseInt(req.body.players_online) < 0 || parseInt(req.body.players_online) > 600)
         return res.status(400).json({ error: "Missing players_online parameter" });
     if (req.body.os_name === undefined || req.body.os_name === null)
         return res.status(400).json({ error: "Missing os_name parameter" });
@@ -32,7 +33,7 @@ router.post("/update-server", async (req, res) => {
 });
 
 // Endpoint sent by the server to add a plugin to its list
-router.post("/add-plugin", (req, res) => {
+router.post("/add-plugin", serverIngestRateLimiter, (req, res) => {
     console.log(JSON.stringify(req.body));
 
     if (!req.body.server_uuid)
