@@ -9,6 +9,7 @@ import { getSessionMaxAgeMs, getTotalAccounts } from "./databases/accountsdb.js"
 import pluginRoutes from "./routes/plugins.js";
 import accountRoutes from "./routes/accounts.js";
 import serverRoutes from "./routes/servers.js";
+import embedRoutes from "./routes/embed.js";
 import { getTotalPlugins } from "./databases/plugindb.js";
 import { getRecentActivity } from "./databases/liveActivity.js";
 configDotenv();
@@ -58,6 +59,7 @@ app.use(cors({
 app.use("/api/account", accountRoutes);
 app.use("/api/plugin", pluginRoutes);
 app.use("/api/server", serverRoutes);
+app.use("/api/embed", embedRoutes);
 
 // Endpoint to get current server online server data
 app.get("/api/server-data", (req, res) => {
