@@ -1,5 +1,7 @@
 import express from 'express';
 import {v4 as uuidv4} from 'uuid';
+import BadWordsNext from 'bad-words-next';
+import en from 'bad-words-next/lib/en';
 import { getServersUsingPlugin } from '../databases/serversdb.js';
 import { addOrUpdatePlugin, deletePlugin, getListOfPlugins, getPlugin } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
@@ -8,13 +10,42 @@ import { getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 
 const router = express.Router();
+const badwords = new BadWordsNext({ data: en });
+const MAX_PLUGINS_PER_USER = 25;
 
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
 
-    if (!name) {
+    if (typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Missing name field" });
+    }
+
+    const pluginName = name.trim();
+    if (pluginName.length > 32) {
+        return res.status(400).json({
+            error: "Plugin name must be 32 characters or fewer",
+            error_code: "name_too_long",
+            field: "name",
+            max_length: 32
+        });
+    }
+    if (badwords.check(pluginName)) {
+        return res.status(400).json({
+            error: "Plugin name contains inappropriate language",
+            error_code: "inappropriate_language",
+            field: "name"
+        });
+    }
+
+    const ownedPlugins = getPluginsAccess(req.account.id)
+        .filter(pluginId => typeof pluginId === "string" && pluginId.trim().length > 0);
+    if (ownedPlugins.length >= MAX_PLUGINS_PER_USER) {
+        return res.status(403).json({
+            error: "Plugin limit reached",
+            error_code: "plugin_limit_reached",
+            max_plugins: MAX_PLUGINS_PER_USER
+        });
     }
 
     let pluginUUID = uuidv4();
@@ -22,10 +53,10 @@ router.post("/add-plugin", requireSession, (req, res) => {
         pluginUUID = uuidv4();
     }
 
-    addOrUpdatePlugin(pluginUUID, name);
+    addOrUpdatePlugin(pluginUUID, pluginName);
     addPluginToUser(req.account.id, pluginUUID);
     addToRecentActivity(MessageType.MOD_REGISTERED, {
-        mod_name: name,
+        mod_name: pluginName,
     });
     res.status(201).json({ plugin_uuid: pluginUUID });
 });
@@ -106,7 +137,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
         pluginEntries.forEach(entry => {
             const [pluginUUID, version] = entry.split("@");
             if (pluginUUID === req.params.plugin_uuid && version) {
-                versions.add(version);
+                versions.add(badwords.filter(version.trim()));
             }
         });
         if (server.country) {

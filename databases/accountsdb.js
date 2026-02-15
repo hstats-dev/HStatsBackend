@@ -12,6 +12,8 @@ db.exec(`
         email_hash TEXT UNIQUE,
         password_hash TEXT,
         password_salt TEXT,
+        discord_id TEXT,
+        discord_username TEXT DEFAULT '',
         plugin_access TEXT DEFAULT '',
         is_disabled INTEGER DEFAULT 0,
         created_at INTEGER,
@@ -32,6 +34,9 @@ function ensureColumn(table, column, definition) {
 ensureColumn("accounts", "plugin_access", "TEXT DEFAULT ''");
 ensureColumn("accounts", "github_link", "TEXT");
 ensureColumn("accounts", "curseforge_link", "TEXT");
+ensureColumn("accounts", "discord_id", "TEXT");
+ensureColumn("accounts", "discord_username", "TEXT DEFAULT ''");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_discord_id ON accounts(discord_id) WHERE discord_id IS NOT NULL");
 
 function getEnvKey(name, bytes) {
     const value = process.env[name];
@@ -118,6 +123,56 @@ function createAccount({ email, password }) {
     return getAccountById(id);
 }
 
+function createDiscordAccount({ discordId, discordUsername, email }) {
+    const now = Math.floor(Date.now() / 1000);
+    const id = crypto.randomUUID();
+
+    const emailNorm = typeof email === "string" && email.trim() ? normalizeEmail(email) : null;
+    const emailHash = emailNorm ? hmacLookup(emailNorm) : null;
+
+    if (emailHash) {
+        const existingByEmail = db.prepare("SELECT id FROM accounts WHERE email_hash = ?").get(emailHash);
+        if (existingByEmail) {
+            return { error: "Account already exists" };
+        }
+    }
+
+    const existingByDiscordId = db.prepare("SELECT id FROM accounts WHERE discord_id = ?").get(discordId);
+    if (existingByDiscordId) {
+        return { error: "Discord account already linked" };
+    }
+
+    const insertStmt = db.prepare(`
+        INSERT INTO accounts (
+            id,
+            email_enc,
+            email_hash,
+            password_hash,
+            password_salt,
+            discord_id,
+            discord_username,
+            plugin_access,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertStmt.run(
+        id,
+        emailNorm ? encryptString(emailNorm) : null,
+        emailHash,
+        null,
+        null,
+        discordId,
+        discordUsername || "",
+        "",
+        now,
+        now
+    );
+
+    return getAccountById(id);
+}
+
 function addPluginToUser(accountId, pluginUUID) {
     const row = db.prepare("SELECT plugin_access FROM accounts WHERE id = ?").get(accountId);
     let access = row.plugin_access ? row.plugin_access.split(",") : [];
@@ -162,7 +217,49 @@ function getAccountByEmail(email) {
     return db.prepare("SELECT * FROM accounts WHERE email_hash = ?").get(emailHash);
 }
 
+function getAccountByDiscordId(discordId) {
+    return db.prepare("SELECT * FROM accounts WHERE discord_id = ?").get(discordId);
+}
+
+function linkDiscordToAccount(accountId, { discordId, discordUsername }) {
+    const existing = getAccountByDiscordId(discordId);
+    if (existing && existing.id !== accountId) {
+        return { error: "Discord account already linked" };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare("UPDATE accounts SET discord_id = ?, discord_username = ?, updated_at = ? WHERE id = ?")
+        .run(discordId, discordUsername || "", now, accountId);
+    return getAccountById(accountId);
+}
+
+function syncEmailIfMissing(accountId, email) {
+    if (typeof email !== "string" || !email.trim()) {
+        return getAccountById(accountId);
+    }
+
+    const account = getAccountById(accountId);
+    if (!account || account.email_hash) {
+        return account;
+    }
+
+    const emailNorm = normalizeEmail(email);
+    const emailHash = hmacLookup(emailNorm);
+    const existingByEmail = db.prepare("SELECT id FROM accounts WHERE email_hash = ?").get(emailHash);
+    if (existingByEmail && existingByEmail.id !== accountId) {
+        return account;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare("UPDATE accounts SET email_enc = ?, email_hash = ?, updated_at = ? WHERE id = ?")
+        .run(encryptString(emailNorm), emailHash, now, accountId);
+
+    return getAccountById(accountId);
+}
+
 function verifyPassword(accountRow, password) {
+    if (!accountRow?.password_hash || !accountRow?.password_salt) {
+        return false;
+    }
     const hash = hashPassword(password, accountRow.password_salt);
     return safeEqual(hash, accountRow.password_hash);
 }
@@ -199,6 +296,8 @@ function toSafeAccount(accountRow) {
         created_at: accountRow.created_at,
         updated_at: accountRow.updated_at,
         last_login: accountRow.last_login,
+        discord_connected: !!accountRow.discord_id,
+        discord_username: accountRow.discord_username || "",
         github_link: accountRow.github_link || "",
         curseforge_link: accountRow.curseforge_link || ""
     };
@@ -219,6 +318,10 @@ export {
     addPluginToUser,
     getAccountById,
     getAccountByEmail,
+    getAccountByDiscordId,
+    createDiscordAccount,
+    linkDiscordToAccount,
+    syncEmailIfMissing,
     verifyPassword,
     updatePassword,
     getSessionMaxAgeMs,

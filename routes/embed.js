@@ -233,10 +233,6 @@ function renderCompactLayout(data, options, theme, width, height) {
         <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.14)}" fill="${theme.text}" fill-opacity="0.88" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.09)}" font-weight="800" text-anchor="middle">hstats.dev</text>
         <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.24)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="600" text-anchor="middle">Live Plugin Stats</text>`;
 
-    const idText = options.showId
-        ? `<text x="${contentX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.065)}" font-weight="600">MOD ID: ${data.modId}</text>`
-        : "";
-
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
         <line x1="${padding + leftColWidth}" y1="${Math.round(height * 0.08)}" x2="${padding + leftColWidth}" y2="${Math.round(height * 0.92)}" stroke="${theme.divider}"/>
@@ -244,7 +240,6 @@ function renderCompactLayout(data, options, theme, width, height) {
 
         <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
         <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
-        ${idText}
 
         <g transform="translate(${contentX} ${statsY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>

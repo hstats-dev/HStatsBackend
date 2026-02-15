@@ -31,7 +31,7 @@ if (process.env.PRODUCTION === "true")
     app.set("trust proxy", 1);
 
 if (!process.env.SESSION_SECRET) {
-    console.warn("SESSION_SECRET is not set, using a default value. This should be changed in production!");
+    console.warn("SESSION_SECRET is not set.");
 }
 const SQLiteStoreSession = SQLiteStore(session);
 app.use(session({
