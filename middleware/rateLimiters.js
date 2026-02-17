@@ -1,4 +1,5 @@
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
+import { AUTH_RATE_LIMIT_MAX, AUTH_RATE_LIMIT_WINDOW_MS, SERVER_INGEST_RATE_LIMIT_MAX, SERVER_INGEST_RATE_LIMIT_WINDOW_MS } from "../config.js";
 
 function parsePositiveIntEnv(name, fallback) {
     const raw = process.env[name];
@@ -34,14 +35,14 @@ function createJsonRateLimit({ windowMs, max, message, keyGenerator }) {
 }
 
 const authRateLimiter = createJsonRateLimit({
-    windowMs: parsePositiveIntEnv("AUTH_RATE_LIMIT_WINDOW_MS", 15 * 60 * 1000),
-    max: parsePositiveIntEnv("AUTH_RATE_LIMIT_MAX", 10),
+    windowMs: parsePositiveIntEnv("AUTH_RATE_LIMIT_WINDOW_MS", AUTH_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("AUTH_RATE_LIMIT_MAX", AUTH_RATE_LIMIT_MAX),
     message: "Too many authentication attempts. Try again later."
 });
 
 const serverIngestRateLimiter = createJsonRateLimit({
-    windowMs: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_WINDOW_MS", 60 * 1000),
-    max: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_MAX", 300),
+    windowMs: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_WINDOW_MS", SERVER_INGEST_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_MAX", SERVER_INGEST_RATE_LIMIT_MAX),
     message: "Too many server update requests. Try again later.",
     keyGenerator: (req) => {
         const serverUuid = typeof req.body?.server_uuid === "string"

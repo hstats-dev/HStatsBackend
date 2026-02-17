@@ -1,6 +1,7 @@
 import betterSQL from "better-sqlite3";
 import crypto from "crypto";
 import { configDotenv } from "dotenv";
+import { ACCOUNT_SESSION_DURATION_DAYS } from "../config.js";
 configDotenv();
 
 const db = betterSQL(process.env.ACCOUNTS_DB);
@@ -58,7 +59,7 @@ function getEnvKey(name, bytes) {
 const ENC_KEY = getEnvKey("ACCOUNT_DATA_KEY", 32);
 const HMAC_KEY = getEnvKey("ACCOUNT_DATA_HMAC_KEY", 32);
 const PASSWORD_PEPPER = process.env.ACCOUNT_PASSWORD_PEPPER || "";
-const SESSION_TTL_DAYS = parseInt(process.env.ACCOUNT_SESSION_TTL_DAYS || "14", 10);
+const SESSION_TTL_DAYS = parseInt(ACCOUNT_SESSION_DURATION_DAYS, 10);
 
 function normalizeEmail(email) {
     return email.trim().toLowerCase();

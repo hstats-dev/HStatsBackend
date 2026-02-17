@@ -2,11 +2,11 @@ import betterSQL from "better-sqlite3";
 import axios from "axios";
 import { configDotenv } from "dotenv";
 import { prunePluginDailyStats, upsertPluginDailyStats } from "./pluginstatsdb.js";
+import { MAX_PLAYERS_ONLINE_PER_SERVER, VALID_JAVA_VERSIONS, VALID_OS_NAMES, AMOUNT_NEEDED_TO_DISPLAY } from "../config.js";
 configDotenv();
 
 // Plugin Format: pluginUUID@version (version is optional)
 const db = betterSQL(process.env.SERVERS_DB);
-const MAX_PLAYERS_ONLINE_PER_SERVER = 500;
 
 db.exec(`
     CREATE TABLE IF NOT EXISTS servers (
@@ -28,7 +28,7 @@ function parsePlayerCountStrict(value) {
             throw new Error("players_online must be an integer");
         }
         if (value < 0 || value > MAX_PLAYERS_ONLINE_PER_SERVER) {
-            throw new Error("players_online must be between 0 and 600");
+            throw new Error("players_online must be a normal integer");
         }
         return value;
     }
@@ -47,7 +47,7 @@ function parsePlayerCountStrict(value) {
         throw new Error("players_online must be a safe integer");
     }
     if (parsed < 0 || parsed > MAX_PLAYERS_ONLINE_PER_SERVER) {
-        throw new Error("players_online must be between 0 and 600");
+        throw new Error("players_online must be a normal integer");
     }
 
     return parsed;
@@ -222,7 +222,6 @@ function getTotalServers() {
 // servers using HStats so we dont get a huge list of random OS names
 // if a OS has been used > 5 times, we allow it to be shown in stats, else
 // its grouped under "Other"
-const validOSNames = ["Windows 10", "Windows 11", "Windows 95", "Windows 98", "Windows ME", "Windows NT", "Windows 2000", "Windows XP", "Windows 2003", "Windows CE", "Windows Vista", "Windows 7", "Windows 8", "Windows 8.1", "Linux", "macOS"];
 function getAllOSNames() {
     let os = {};
     const stmt = db.prepare("SELECT os_name FROM servers");
@@ -236,7 +235,7 @@ function getAllOSNames() {
 
     // Filter out invalid OS names
     for (const name in os) {
-        if (!validOSNames.includes(name) && os[name] < 5) {
+        if (!VALID_OS_NAMES.includes(name) && os[name] < AMOUNT_NEEDED_TO_DISPLAY) {
             if (!("Other" in os)) {
                 os["Other"] = 0;
             }
@@ -249,7 +248,6 @@ function getAllOSNames() {
 }
 
 // Same idea for OS names
-const validJavaVersions = ["8", "11", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"];
 function getAllJavaVersions() {
     let versions = {};
     const stmt = db.prepare("SELECT java_version FROM servers");
@@ -263,7 +261,7 @@ function getAllJavaVersions() {
 
     // Filter out invalid Java versions
     for (const version in versions) {
-        if (!validJavaVersions.includes(version) && versions[version] < 5) {
+        if (!VALID_JAVA_VERSIONS.includes(version) && versions[version] < AMOUNT_NEEDED_TO_DISPLAY) {
             if (!("Other" in versions)) {
                 versions["Other"] = 0;
             }
@@ -285,6 +283,18 @@ function getAllCountries() {
             countries[row.country]++;
         }
     });
+
+    // Filter out unknown/invalid countries with low counts
+    for (const country in countries) {
+        if (country === "Unknown" && countries[country] < AMOUNT_NEEDED_TO_DISPLAY) {
+            if (!("Other" in countries)) {
+                countries["Other"] = 0;
+            }
+            countries["Other"] += countries[country];
+            delete countries[country];
+        }
+    }
+
     return countries;
 }
 

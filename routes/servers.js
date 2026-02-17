@@ -5,10 +5,10 @@ import { addOrUpdateServer, addPluginToServer, getServer } from '../databases/se
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { getPlugin } from '../databases/plugindb.js';
 import { serverIngestRateLimiter } from '../middleware/rateLimiters.js';
+import { MAX_PLAYERS_ONLINE_PER_SERVER } from '../config.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
-const MAX_PLAYERS_ONLINE = 500;
 
 function stripPluginEntryDelimiters(value) {
     if (typeof value !== "string") {
@@ -46,7 +46,7 @@ router.post("/update-server", serverIngestRateLimiter, async (req, res) => {
     if (!req.body.server_uuid)
         return res.status(400).json({ error: "Missing server_uuid parameter" });
     const playersOnline = parseStrictNonNegativeInt(req.body.players_online);
-    if (playersOnline === null || playersOnline > MAX_PLAYERS_ONLINE)
+    if (playersOnline === null || playersOnline > MAX_PLAYERS_ONLINE_PER_SERVER)
         return res.status(400).json({ error: "players_online must be an integer" });
     if (req.body.os_name === undefined || req.body.os_name === null)
         return res.status(400).json({ error: "Missing os_name parameter" });
@@ -79,7 +79,7 @@ router.post("/update-server", serverIngestRateLimiter, async (req, res) => {
         player_count: playersOnline,
         server_uuid: req.body.server_uuid.substring(0, 6)
     });
-    res.status(200).json({ status: "success" });
+    res.status(204).json({ status: "success" });
 });
 
 // Endpoint sent by the server to add a plugin to its list
@@ -110,7 +110,7 @@ router.post("/add-plugin", serverIngestRateLimiter, (req, res) => {
         res.json({ status: "success" });
     } else {
         console.log("Plugin " + pluginUuid + " already added to server " + req.body.server_uuid);
-        res.status(400).json({ error: "Plugin already added" });
+        res.status(200).json({ error: "Plugin already added" });
     }
 });
 

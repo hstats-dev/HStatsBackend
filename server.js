@@ -12,6 +12,7 @@ import serverRoutes from "./routes/servers.js";
 import embedRoutes from "./routes/embed.js";
 import { getTotalPlugins } from "./databases/plugindb.js";
 import { getRecentActivity } from "./databases/liveActivity.js";
+import { FRONTEND_URL, PORT } from "./config.js";
 configDotenv();
 
 const app = express();
@@ -50,7 +51,7 @@ app.use(session({
     }
 }));
 
-const allowedOrigin = (process.env.PRODUCTION == "true" ? "https://hstats.dev" : "http://localhost:5173");
+const allowedOrigin = (process.env.PRODUCTION == "true" ? FRONTEND_URL : "http://localhost:5173");
 app.use(cors({
     origin: allowedOrigin,
     credentials: true
@@ -79,8 +80,8 @@ app.get("/api/recent-activity", (req, res) => {
     res.status(200).json({ recentActivity });
 });
 
-app.listen(3000, () => {
-    console.log(`Server is running on port 3000`);
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
 });
 
 if (!process.env.SERVER_ALIVE_CHECK_INTERVAL || isNaN(process.env.SERVER_ALIVE_CHECK_INTERVAL)) {

@@ -8,10 +8,10 @@ import requireSession from '../middleware/requireSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
 import { getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
+import { MAX_PLUGINS_PER_USER } from '../config.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
-const MAX_PLUGINS_PER_USER = 25;
 
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {

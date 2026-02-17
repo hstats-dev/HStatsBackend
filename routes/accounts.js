@@ -19,6 +19,7 @@ import {
 } from "../databases/accountsdb.js";
 import requireSession from "../middleware/requireSession.js";
 import { authRateLimiter } from "../middleware/rateLimiters.js";
+import { EMAIL_MAX_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../config.js";
 
 const router = express.Router();
 const RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
@@ -30,11 +31,11 @@ const FRONTEND_ORIGIN = process.env.DISCORD_OAUTH_FRONTEND_ORIGIN
     || (process.env.PRODUCTION === "true" ? "https://hstats.dev" : "http://localhost:5173");
 
 function validateEmail(email) {
-    return typeof email === "string" && email.includes("@") && email.length <= 320;
+    return typeof email === "string" && email.includes("@") && email.length <= EMAIL_MAX_LENGTH;
 }
 
 function validatePassword(password) {
-    return typeof password === "string" && password.length >= 8 && password.length <= 128;
+    return typeof password === "string" && password.length >= PASSWORD_MIN_LENGTH && password.length <= PASSWORD_MAX_LENGTH;
 }
 
 function getDiscordRedirectUri(req) {
