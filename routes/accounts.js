@@ -399,7 +399,7 @@ router.post("/apply-curseforge-link", requireSession, (req, res) => {
     res.json({ status: "success" });
 });
 
-router.get("/get-plugin-ownership/:plugin_uuid", requireSession, (req, res) => {
+router.get("/get-plugin-ownership/:plugin_uuid", (req, res) => {
     const { plugin_uuid } = req.params || {};
     if (typeof plugin_uuid !== "string") {
         return res.status(400).json({ error: "Invalid plugin UUID" });
