@@ -6,6 +6,8 @@ configDotenv();
 
 // Plugin Format: pluginUUID@version (version is optional)
 const db = betterSQL(process.env.SERVERS_DB);
+const MAX_PLAYERS_ONLINE_PER_SERVER = 500;
+
 db.exec(`
     CREATE TABLE IF NOT EXISTS servers (
         uuid TEXT PRIMARY KEY,
@@ -20,13 +22,79 @@ db.exec(`
     );
 `);
 
+function parsePlayerCountStrict(value) {
+    if (typeof value === "number") {
+        if (!Number.isSafeInteger(value)) {
+            throw new Error("players_online must be an integer");
+        }
+        if (value < 0 || value > MAX_PLAYERS_ONLINE_PER_SERVER) {
+            throw new Error("players_online must be between 0 and 600");
+        }
+        return value;
+    }
+
+    if (typeof value !== "string") {
+        throw new Error("players_online must be a number or numeric string");
+    }
+
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) {
+        throw new Error("players_online must be a whole number string");
+    }
+
+    const parsed = Number.parseInt(trimmed, 10);
+    if (!Number.isSafeInteger(parsed)) {
+        throw new Error("players_online must be a safe integer");
+    }
+    if (parsed < 0 || parsed > MAX_PLAYERS_ONLINE_PER_SERVER) {
+        throw new Error("players_online must be between 0 and 600");
+    }
+
+    return parsed;
+}
+
+function clampPlayerCount(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        return 0;
+    }
+    if (numeric >= MAX_PLAYERS_ONLINE_PER_SERVER) {
+        return MAX_PLAYERS_ONLINE_PER_SERVER;
+    }
+    return Math.floor(numeric);
+}
+
+function normalizeStoredPlayerCounts() {
+    const stmt = db.prepare(`
+        UPDATE servers
+        SET players_online = CASE
+            WHEN players_online IS NULL THEN 0
+            WHEN CAST(players_online AS REAL) < 0 THEN 0
+            WHEN CAST(players_online AS REAL) > ? THEN ?
+            ELSE CAST(players_online AS INTEGER)
+        END
+        WHERE players_online IS NULL
+           OR CAST(players_online AS REAL) < 0
+           OR CAST(players_online AS REAL) > ?
+           OR players_online != CAST(players_online AS INTEGER)
+    `);
+    const result = stmt.run(MAX_PLAYERS_ONLINE_PER_SERVER, MAX_PLAYERS_ONLINE_PER_SERVER, MAX_PLAYERS_ONLINE_PER_SERVER);
+    if (result.changes > 0) {
+        console.warn(`Normalized ${result.changes} spoofed/invalid players_online values in servers table.`);
+    }
+}
+
+normalizeStoredPlayerCounts();
+
 // Initial request to add an online server
 async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion = "", javaVersion = "", coreCount = 0) {
+    const safePlayerCount = parsePlayerCountStrict(playerCount);
+
     const getStmt = db.prepare("SELECT * FROM servers WHERE uuid = ?");
     const row = getStmt.get(uuid);
     if (row) {
         const updateStmt = db.prepare("UPDATE servers SET players_online = ?, last_updated = CURRENT_TIMESTAMP WHERE uuid = ?");
-        return updateStmt.run(playerCount, uuid).changes > 0;
+        return updateStmt.run(safePlayerCount, uuid).changes > 0;
     }
 
     let country = "Unknown";
@@ -39,7 +107,7 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
         }).finally(() => {
             console.log(`Adding new server: ${uuid} with IP: ${ip} (${country})`);
             const insertStmt = db.prepare("INSERT INTO servers (uuid, players_online, os_name, os_version, java_version, core_count, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            insertStmt.run(uuid, playerCount, osName, osVersion, javaVersion, coreCount, country);
+            insertStmt.run(uuid, safePlayerCount, osName, osVersion, javaVersion, coreCount, country);
         });
     return true;
 }
@@ -118,7 +186,8 @@ function checkInActiveServers() {
     const servers = db.prepare("SELECT players_online, plugins FROM servers").all();
     const pluginUsage = new Map();
     servers.forEach(server => {
-        const playersOnline = Number(server.players_online) || 0;
+        // enforce max contribution from any single server to protect history from spoofed values
+        const playersOnline = clampPlayerCount(server.players_online);
         const pluginUUIDs = getPluginUUIDsForServer(server.plugins);
         pluginUUIDs.forEach(pluginUUID => {
             const existing = pluginUsage.get(pluginUUID) || { serversCount: 0, playersCount: 0 };
@@ -139,9 +208,8 @@ function checkInActiveServers() {
 
 
 function getTotalPlayersOnline() {
-    const stmt = db.prepare("SELECT SUM(players_online) as total FROM servers");
-    const row = stmt.get();
-    return row.total ?? 0;
+    const rows = db.prepare("SELECT players_online FROM servers").all();
+    return rows.reduce((sum, row) => sum + clampPlayerCount(row.players_online), 0);
 }
 
 function getTotalServers() {
@@ -227,7 +295,12 @@ function getServersUsingPlugin(pluginUUID) {
 
     const stmt = db.prepare("SELECT * FROM servers WHERE plugins LIKE ?");
     const rows = stmt.all(`%${pluginUUID}%`);
-    return rows.filter(row => getPluginUUIDsForServer(row.plugins).has(pluginUUID));
+    return rows
+        .filter(row => getPluginUUIDsForServer(row.plugins).has(pluginUUID))
+        .map(row => ({
+            ...row,
+            players_online: clampPlayerCount(row.players_online)
+        }));
 }
 
 export {

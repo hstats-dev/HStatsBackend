@@ -1,4 +1,4 @@
-﻿# Embed Card Endpoint
+# Embed Card Endpoint
 
 ## Route
 `GET /api/embed/:mod/card.svg`
@@ -14,10 +14,18 @@ All options are optional.
 | Option | Type | Values | Default | Notes |
 |---|---|---|---|---|
 | `theme` | string | `light`, `dark` | `light` | Visual color theme. |
-| `layout` | string | `compact`, `stacked` | `compact` | Controls structure/format. |
+| `layout` | string | `compact`, `stacked`, `history` | `compact` | Controls structure/format. |
 | `size` | string | `sm`, `md`, `lg` | `md` | Uses per-layout size presets. |
 | `show_id` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `true` | Hide/show plugin UUID text. |
 | `dark` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `false` | Alias toggle; if true, forces dark theme. |
+
+## History Layout
+- `layout=history` renders a daily trend graph for the plugin.
+- The graph includes both series from plugin daily stats:
+  - `servers_count`
+  - `players_count`
+- Data source is the last `90` days (`getPluginDailyStatsLastDays`).
+- If no history rows exist yet, the card renders a single fallback point from current live totals.
 
 ## Caching
 - In-memory cache is enabled in the API process using a `Map`.
@@ -41,23 +49,27 @@ Sizes depend on `layout`:
   - `sm`: `420x180`
   - `md`: `500x220`
   - `lg`: `620x260`
+- `history`
+  - `sm`: `620x220`
+  - `md`: `760x280`
+  - `lg`: `920x340`
 
 ## Example URLs
 Default:
 
 `/api/embed/PLUGIN_UUID/card.svg`
 
-Dark compact large:
+History graph (light):
 
-`/api/embed/PLUGIN_UUID/card.svg?theme=dark&layout=compact&size=lg`
+`/api/embed/PLUGIN_UUID/card.svg?layout=history`
 
-Hide mod ID:
+History graph dark large:
 
-`/api/embed/PLUGIN_UUID/card.svg?show_id=false`
+`/api/embed/PLUGIN_UUID/card.svg?layout=history&theme=dark&size=lg`
 
-Stacked dark using alias:
+Hide mod ID on history layout:
 
-`/api/embed/PLUGIN_UUID/card.svg?layout=stacked&dark=true`
+`/api/embed/PLUGIN_UUID/card.svg?layout=history&show_id=false`
 
 ## Frontend Integration Notes
 - Use the URL directly in `<img src="...">`.

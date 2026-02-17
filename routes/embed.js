@@ -1,9 +1,10 @@
-﻿import express from "express";
+import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getPlugin } from "../databases/plugindb.js";
 import { getServersUsingPlugin } from "../databases/serversdb.js";
+import { getPluginDailyStatsLastDays } from "../databases/pluginstatsdb.js";
 
 const router = express.Router();
 const TARGET_URL = "https://hstats.dev";
@@ -21,6 +22,11 @@ const LAYOUT_SIZE_PRESETS = {
         sm: { width: 420, height: 180 },
         md: { width: 500, height: 220 },
         lg: { width: 620, height: 260 }
+    },
+    history: {
+        sm: { width: 620, height: 220 },
+        md: { width: 760, height: 280 },
+        lg: { width: 920, height: 340 }
     }
 };
 
@@ -33,6 +39,13 @@ const THEMES = {
         divider: "rgba(17,17,17,0.16)",
         panel: "#ffffff",
         panelBorder: "rgba(17,17,17,0.22)",
+        chartBg: "#fbfdff",
+        chartGrid: "rgba(15,15,16,0.14)",
+        chartAxis: "rgba(15,15,16,0.34)",
+        serversLine: "#0284c7",
+        serversFill: "rgba(2,132,199,0.16)",
+        playersLine: "#06b6d4",
+        playersFill: "rgba(6,182,212,0.14)",
         logoFallbackBg: "#111111",
         logoFallbackText: "#ffffff"
     },
@@ -44,6 +57,13 @@ const THEMES = {
         divider: "rgba(248,249,251,0.22)",
         panel: "#151a23",
         panelBorder: "rgba(248,249,251,0.26)",
+        chartBg: "#131925",
+        chartGrid: "rgba(248,249,251,0.16)",
+        chartAxis: "rgba(248,249,251,0.34)",
+        serversLine: "#38bdf8",
+        serversFill: "rgba(56,189,248,0.18)",
+        playersLine: "#22d3ee",
+        playersFill: "rgba(34,211,238,0.18)",
         logoFallbackBg: "#f8f9fb",
         logoFallbackText: "#101319"
     }
@@ -157,7 +177,7 @@ function parseEnum(value, allowed, fallback) {
 }
 
 function getEmbedOptions(query = {}) {
-    const layout = parseEnum(query.layout, ["compact", "stacked"], "compact");
+    const layout = parseEnum(query.layout, ["compact", "stacked", "history"], "compact");
     const size = parseEnum(query.size, ["sm", "md", "lg"], "md");
 
     let theme = parseEnum(query.theme, ["light", "dark"], "light");
@@ -199,6 +219,55 @@ function getNameFontSize(textLength, height) {
     return Math.round(height * 0.125);
 }
 
+function getUtcTodayDayString() {
+    const now = new Date();
+    const y = now.getUTCFullYear();
+    const m = String(now.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(now.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+}
+
+function formatDayLabel(day) {
+    const dayText = String(day || "");
+    const parts = dayText.split("-");
+    if (parts.length !== 3) {
+        return dayText;
+    }
+    const month = Number(parts[1]);
+    const date = Number(parts[2]);
+    if (!Number.isInteger(month) || !Number.isInteger(date)) {
+        return dayText;
+    }
+    return `${month}/${date}`;
+}
+
+function buildSeriesPaths(values, chartX, chartY, chartW, chartH, maxValue) {
+    if (!Array.isArray(values) || values.length < 1) {
+        return { linePath: "", areaPath: "", points: [] };
+    }
+
+    const yMax = Math.max(1, Number(maxValue) || 1);
+    const stepX = values.length > 1 ? chartW / (values.length - 1) : 0;
+
+    const points = values.map((value, index) => {
+        const safeValue = Math.max(0, Number(value) || 0);
+        const normalized = safeValue / yMax;
+        const x = chartX + (index * stepX);
+        const y = chartY + chartH - (normalized * chartH);
+        return { x, y };
+    });
+
+    const linePath = points
+        .map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+        .join(" ");
+
+    const lastPoint = points[points.length - 1];
+    const firstPoint = points[0];
+    const areaPath = `${linePath} L${lastPoint.x.toFixed(2)} ${(chartY + chartH).toFixed(2)} L${firstPoint.x.toFixed(2)} ${(chartY + chartH).toFixed(2)} Z`;
+
+    return { linePath, areaPath, points };
+}
+
 function wrapCardContent(content) {
     return `
     <a href="${TARGET_URL}" target="_blank" rel="noopener noreferrer" style="cursor:pointer;">
@@ -227,6 +296,9 @@ function renderCompactLayout(data, options, theme, width, height) {
     const statW = Math.floor((contentWidth - gap) / 2);
 
     const nameFontSize = getNameFontSize(data.name.length, height);
+    const idText = options.showId
+        ? `<text x="${contentX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.065)}" font-weight="600">MOD ID: ${data.modId}</text>`
+        : "";
 
     const logoBlock = `
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
@@ -240,6 +312,7 @@ function renderCompactLayout(data, options, theme, width, height) {
 
         <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
         <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
+        ${idText}
 
         <g transform="translate(${contentX} ${statsY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
@@ -252,6 +325,120 @@ function renderCompactLayout(data, options, theme, width, height) {
             <text x="14" y="${Math.round(statH * 0.37)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.6">PLAYERS</text>
             <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.players}</text>
         </g>`;
+
+    return wrapCardContent(main);
+}
+
+function renderHistoryLayout(data, options, theme, width, height) {
+    const padding = Math.round(width * 0.04);
+    const headerHeight = Math.round(height * 0.35);
+    const chartPanelY = padding + headerHeight;
+    const chartPanelH = height - chartPanelY - padding;
+    const chartPanelW = width - (padding * 2);
+    const chartPanelX = padding;
+
+    const logoSize = Math.round(headerHeight * 0.54);
+    const logoX = padding;
+    const logoY = padding + Math.round(headerHeight * 0.04);
+    const titleX = logoX + logoSize + Math.round(width * 0.018);
+    const titleY = logoY + Math.round(headerHeight * 0.12);
+    const nameY = titleY + Math.round(headerHeight * 0.36);
+    const idY = nameY + Math.round(headerHeight * 0.26);
+
+    const statW = Math.round(width * 0.15);
+    const statH = Math.round(headerHeight * 0.56);
+    const statGap = Math.round(width * 0.014);
+    const statsX = width - padding - statW;
+    const statsX2 = statsX - statW - statGap;
+    const statsY = padding + Math.round(headerHeight * 0.06);
+
+    const chartInsetX = Math.round(chartPanelW * 0.05);
+    const chartInsetTop = Math.round(chartPanelH * 0.14);
+    const chartInsetBottom = Math.round(chartPanelH * 0.24);
+    const plotX = chartPanelX + chartInsetX;
+    const plotY = chartPanelY + chartInsetTop;
+    const plotW = chartPanelW - (chartInsetX * 2);
+    const plotH = chartPanelH - chartInsetTop - chartInsetBottom;
+
+    const historyPoints = Array.isArray(data.history) ? data.history : [];
+    const yMax = Math.max(
+        1,
+        ...historyPoints.map((point) => Math.max(point.serversCount, point.playersCount))
+    );
+
+    const serverValues = historyPoints.map((point) => point.serversCount);
+    const playerValues = historyPoints.map((point) => point.playersCount);
+    const serversSeries = buildSeriesPaths(serverValues, plotX, plotY, plotW, plotH, yMax);
+    const playersSeries = buildSeriesPaths(playerValues, plotX, plotY, plotW, plotH, yMax);
+
+    const latestServers = serverValues.length > 0 ? serverValues[serverValues.length - 1] : 0;
+    const latestPlayers = playerValues.length > 0 ? playerValues[playerValues.length - 1] : 0;
+    const latestServersPoint = serversSeries.points[serversSeries.points.length - 1];
+    const latestPlayersPoint = playersSeries.points[playersSeries.points.length - 1];
+
+    const gridLines = [0, 1, 2, 3].map((index) => {
+        const ratio = index / 3;
+        const y = plotY + (plotH * ratio);
+        const value = Math.round(yMax * (1 - ratio));
+        return `
+            <line x1="${plotX}" y1="${y.toFixed(2)}" x2="${(plotX + plotW).toFixed(2)}" y2="${y.toFixed(2)}" stroke="${theme.chartGrid}" />
+            <text x="${(plotX - 8).toFixed(2)}" y="${(y + 4).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${formatNumber(value)}</text>
+        `;
+    }).join("");
+
+    const firstDay = historyPoints.length > 0 ? formatDayLabel(historyPoints[0].day) : formatDayLabel(getUtcTodayDayString());
+    const lastDay = historyPoints.length > 0 ? formatDayLabel(historyPoints[historyPoints.length - 1].day) : formatDayLabel(getUtcTodayDayString());
+
+    const idText = options.showId
+        ? `<text x="${titleX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.043)}" font-weight="600">MOD ID: ${data.modId}</text>`
+        : "";
+
+    const noDataText = data.historySourceRows === 0
+        ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No historical data yet - showing current snapshot</text>`
+        : "";
+
+    const main = `
+        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
+        ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
+        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">DAILY HISTORY</text>
+        <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
+        ${idText}
+        <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
+
+        <g transform="translate(${statsX2} ${statsY})">
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.035)}" font-weight="700">SERVERS</text>
+            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.servers}</text>
+        </g>
+        <g transform="translate(${statsX} ${statsY})">
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.035)}" font-weight="700">PLAYERS</text>
+            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.players}</text>
+        </g>
+
+        <g>
+            <rect x="${chartPanelX}" y="${chartPanelY}" width="${chartPanelW}" height="${chartPanelH}" rx="10" fill="${theme.chartBg}" stroke="${theme.panelBorder}" />
+            ${gridLines}
+            <line x1="${plotX}" y1="${(plotY + plotH).toFixed(2)}" x2="${(plotX + plotW).toFixed(2)}" y2="${(plotY + plotH).toFixed(2)}" stroke="${theme.chartAxis}" />
+            <path d="${serversSeries.areaPath}" fill="${theme.serversFill}" />
+            <path d="${playersSeries.areaPath}" fill="${theme.playersFill}" />
+            <path d="${serversSeries.linePath}" fill="none" stroke="${theme.serversLine}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="${playersSeries.linePath}" fill="none" stroke="${theme.playersLine}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            ${latestServersPoint ? `<circle cx="${latestServersPoint.x.toFixed(2)}" cy="${latestServersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.serversLine}"/>` : ""}
+            ${latestPlayersPoint ? `<circle cx="${latestPlayersPoint.x.toFixed(2)}" cy="${latestPlayersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.playersLine}"/>` : ""}
+            <text x="${plotX}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${firstDay}</text>
+            <text x="${(plotX + plotW).toFixed(2)}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${lastDay}</text>
+            <g transform="translate(${plotX} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
+                <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.serversLine}" />
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}">Servers (${formatNumber(latestServers)})</text>
+            </g>
+            <g transform="translate(${plotX + Math.round(width * 0.19)} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
+                <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.playersLine}" />
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}">Players (${formatNumber(latestPlayers)})</text>
+            </g>
+            ${noDataText}
+        </g>
+    `;
 
     return wrapCardContent(main);
 }
@@ -312,9 +499,14 @@ function renderCardSvg(data, options) {
     const height = dims.height;
     const theme = THEMES[options.theme];
 
-    const cardContent = options.layout === "stacked"
-        ? renderStackedLayout(data, options, theme, width, height)
-        : renderCompactLayout(data, options, theme, width, height);
+    let cardContent;
+    if (options.layout === "stacked") {
+        cardContent = renderStackedLayout(data, options, theme, width, height);
+    } else if (options.layout === "history") {
+        cardContent = renderHistoryLayout(data, options, theme, width, height);
+    } else {
+        cardContent = renderCompactLayout(data, options, theme, width, height);
+    }
 
     return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="${data.name} usage card">
@@ -344,10 +536,28 @@ router.get("/:mod/card.svg", (req, res) => {
     const servers = getServersUsingPlugin(modId);
 
     let playerCount = 0;
-    servers.forEach(server => {
+    servers.forEach((server) => {
         const players = Number(server.players_online) || 0;
         playerCount += players;
     });
+
+    const rawHistoryRows = getPluginDailyStatsLastDays(modId, 90);
+    const history = Array.isArray(rawHistoryRows)
+        ? rawHistoryRows
+            .map((row) => ({
+                day: String(row.day || ""),
+                serversCount: Math.max(0, Number(row.servers_count) || 0),
+                playersCount: Math.max(0, Number(row.players_count) || 0)
+            }))
+            .filter((point) => point.day.length > 0)
+        : [];
+    const historyWithFallback = history.length > 0
+        ? history
+        : [{
+            day: getUtcTodayDayString(),
+            serversCount: servers.length,
+            playersCount: playerCount
+        }];
 
     const pluginDisplayName = truncateText(plugin?.name || "Unknown Plugin", 36);
 
@@ -355,7 +565,9 @@ router.get("/:mod/card.svg", (req, res) => {
         name: escapeXml(pluginDisplayName),
         modId: escapeXml(truncateText(modId, 44)),
         servers: formatNumber(servers.length),
-        players: formatNumber(playerCount)
+        players: formatNumber(playerCount),
+        history: historyWithFallback,
+        historySourceRows: history.length
     };
 
     const svg = renderCardSvg(data, options);

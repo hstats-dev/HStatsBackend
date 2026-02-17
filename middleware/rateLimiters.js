@@ -41,7 +41,7 @@ const authRateLimiter = createJsonRateLimit({
 
 const serverIngestRateLimiter = createJsonRateLimit({
     windowMs: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_WINDOW_MS", 60 * 1000),
-    max: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_MAX", 240),
+    max: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_MAX", 300),
     message: "Too many server update requests. Try again later.",
     keyGenerator: (req) => {
         const serverUuid = typeof req.body?.server_uuid === "string"

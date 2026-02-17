@@ -364,7 +364,16 @@ router.get("/oauth/discord/callback", authRateLimiter, async (req, res) => {
 
 router.post("/apply-github-link", requireSession, (req, res) => {
     const { github_link } = req.body || {};
-    if (typeof github_link !== "string" || !github_link.startsWith("https://github.com/")) {
+    if (typeof github_link !== "string") {
+        return res.status(400).json({ error: "Invalid GitHub link" });
+    }
+
+    if (github_link.trim() === "") {
+        setGithubLink(req.account.id, null);
+        return res.json({ status: "success" });
+    }
+
+    if (!github_link.startsWith("https://github.com/")) {
         return res.status(400).json({ error: "Invalid GitHub link" });
     }
     setGithubLink(req.account.id, github_link);
@@ -373,7 +382,16 @@ router.post("/apply-github-link", requireSession, (req, res) => {
 
 router.post("/apply-curseforge-link", requireSession, (req, res) => {
     const { curseforge_link } = req.body || {};
-    if (typeof curseforge_link !== "string" || !curseforge_link.startsWith("https://www.curseforge.com/members/")) {
+    if (typeof curseforge_link !== "string") {
+        return res.status(400).json({ error: "Invalid CurseForge link" });
+    }
+
+    if (curseforge_link.trim() === "") {
+        setCurseforgeLink(req.account.id, null);
+        return res.json({ status: "success" });
+    }
+
+    if (!curseforge_link.startsWith("https://www.curseforge.com/members/")) {
         return res.status(400).json({ error: "Invalid CurseForge link" });
     }
     setCurseforgeLink(req.account.id, curseforge_link);
