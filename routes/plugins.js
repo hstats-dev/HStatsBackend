@@ -124,7 +124,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
 
     let totalServers = servers.length;
     let totalPlayers = 0;
-    let versions = new Set();
+    let versions = {};
     let countries = {};
     let javaVersions = {};
     let osNames = {};
@@ -137,7 +137,10 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
         pluginEntries.forEach(entry => {
             const [pluginUUID, version] = entry.split("@");
             if (pluginUUID === req.params.plugin_uuid && version) {
-                versions.add(badwords.filter(version.trim()));
+                if (!(version in versions)) {
+                    versions[version] = 0;
+                }
+                versions[version]++;
             }
         });
         if (server.country) {
@@ -177,7 +180,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
         total_servers: totalServers,
         total_players: totalPlayers,
         history: getPluginDailyStatsLastDays(req.params.plugin_uuid),
-        versions: Array.from(versions),
+        versions: versions,
         countries: countries,
         java_versions: javaVersions,
         os_names: osNames,

@@ -21,6 +21,7 @@ export const SERVER_INGEST_RATE_LIMIT_MAX = 300;
 export const VALID_OS_NAMES = ["Windows 10", "Windows 11", "Windows 95", "Windows 98", "Windows ME", "Windows NT", "Windows 2000", "Windows XP", "Windows 2003", "Windows CE", "Windows Vista", "Windows 7", "Windows 8", "Windows 8.1", "Linux", "macOS"];
 export const VALID_JAVA_VERSIONS = ["8", "11", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"];
 export const AMOUNT_NEEDED_TO_DISPLAY = 5; // amount of "unique" of either OS name or Java version needed to be categorized outside of "other" and in its own
+export const PLUGIN_HISTORY_DAYS = 30; // keep and return plugin usage history for the last 30 days
 
 /*
     * Account Constants

@@ -20,11 +20,11 @@ All options are optional.
 | `dark` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `false` | Alias toggle; if true, forces dark theme. |
 
 ## History Layout
-- `layout=history` renders a daily trend graph for the plugin.
-- The graph includes both series from plugin daily stats:
+- `layout=history` renders an hourly peak trend graph for the plugin.
+- The graph includes both series from plugin hourly stats:
   - `servers_count`
   - `players_count`
-- Data source is the last `90` days (`getPluginDailyStatsLastDays`).
+- Data source is the last `30` days (`getPluginDailyStatsLastDays`).
 - If no history rows exist yet, the card renders a single fallback point from current live totals.
 
 ## Caching

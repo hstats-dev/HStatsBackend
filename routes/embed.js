@@ -229,6 +229,32 @@ function getUtcTodayDayString() {
 
 function formatDayLabel(day) {
     const dayText = String(day || "");
+    const isoHourMatch = dayText.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):\d{2}:\d{2}Z$/);
+    if (isoHourMatch) {
+        const month = Number(isoHourMatch[2]);
+        const date = Number(isoHourMatch[3]);
+        const hour24 = Number(isoHourMatch[4]);
+        if (Number.isInteger(month) && Number.isInteger(date) && Number.isInteger(hour24)) {
+            const hour12 = ((hour24 + 11) % 12) + 1;
+            const amPm = hour24 >= 12 ? "PM" : "AM";
+            return `${month}/${date} @ ${hour12}${amPm}`;
+        }
+        return dayText;
+    }
+
+    const sqlHourMatch = dayText.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):\d{2}:\d{2}$/);
+    if (sqlHourMatch) {
+        const month = Number(sqlHourMatch[2]);
+        const date = Number(sqlHourMatch[3]);
+        const hour24 = Number(sqlHourMatch[4]);
+        if (Number.isInteger(month) && Number.isInteger(date) && Number.isInteger(hour24)) {
+            const hour12 = ((hour24 + 11) % 12) + 1;
+            const amPm = hour24 >= 12 ? "PM" : "AM";
+            return `${month}/${date} @ ${hour12}${amPm}`;
+        }
+        return dayText;
+    }
+
     const parts = dayText.split("-");
     if (parts.length !== 3) {
         return dayText;
@@ -400,7 +426,7 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">DAILY HISTORY</text>
+        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">HOURLY PEAK HISTORY</text>
         <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
         ${idText}
         <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
@@ -541,11 +567,11 @@ router.get("/:mod/card.svg", (req, res) => {
         playerCount += players;
     });
 
-    const rawHistoryRows = getPluginDailyStatsLastDays(modId, 90);
+    const rawHistoryRows = getPluginDailyStatsLastDays(modId);
     const history = Array.isArray(rawHistoryRows)
         ? rawHistoryRows
             .map((row) => ({
-                day: String(row.day || ""),
+                day: String(row.hour_start || row.day || ""),
                 serversCount: Math.max(0, Number(row.servers_count) || 0),
                 playersCount: Math.max(0, Number(row.players_count) || 0)
             }))

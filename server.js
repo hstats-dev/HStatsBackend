@@ -4,7 +4,7 @@ import SQLiteStore from "connect-sqlite3";
 import cors from "cors";
 import requestIp from "request-ip";
 import { configDotenv } from "dotenv";
-import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
+import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getCoreCounts, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
 import { getSessionMaxAgeMs, getTotalAccounts } from "./databases/accountsdb.js";
 import pluginRoutes from "./routes/plugins.js";
 import accountRoutes from "./routes/accounts.js";
@@ -26,6 +26,7 @@ let osNames = getAllOSNames();
 let javaVersions = getAllJavaVersions();
 let countries = getAllCountries();
 let userCount = getTotalAccounts();
+let coreCount = getCoreCounts();
 let pluginCount = getTotalPlugins();
 
 if (process.env.PRODUCTION === "true")
@@ -37,7 +38,7 @@ if (!process.env.SESSION_SECRET) {
 const SQLiteStoreSession = SQLiteStore(session);
 app.use(session({
     store: new SQLiteStoreSession({
-        db: process.env.SESSIONS_DB || "sessions.db",
+        db: "sessions.db",
         dir: process.env.SESSIONS_DIR || "databases"
     }),
     secret: process.env.SESSION_SECRET,
@@ -71,7 +72,8 @@ app.get("/api/server-data", (req, res) => {
         java_versions: javaVersions,
         countries: countries,
         user_count: userCount,
-        plugin_count: pluginCount
+        plugin_count: pluginCount,
+        core_count: coreCount
     });
 });
 
@@ -99,6 +101,7 @@ setInterval(() => {
     javaVersions = getAllJavaVersions();
     countries = getAllCountries();
     userCount = getTotalAccounts();
+    coreCount = getCoreCounts();
     pluginCount = getTotalPlugins();
     console.log(`Currently ${onlineServers} online servers with ${onlinePlayers} total players.`);
 }, process.env.SERVER_ALIVE_CHECK_INTERVAL * 60 * 1000); // minutes

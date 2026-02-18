@@ -1,7 +1,7 @@
 import betterSQL from "better-sqlite3";
 import axios from "axios";
 import { configDotenv } from "dotenv";
-import { prunePluginDailyStats, upsertPluginDailyStats } from "./pluginstatsdb.js";
+import { prunePluginHourlyStats, upsertPluginHourlyStats } from "./pluginstatsdb.js";
 import { MAX_PLAYERS_ONLINE_PER_SERVER, VALID_JAVA_VERSIONS, VALID_OS_NAMES, AMOUNT_NEEDED_TO_DISPLAY } from "../config.js";
 configDotenv();
 
@@ -98,9 +98,9 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
     }
 
     let country = "Unknown";
-    await axios.get(`https://api.ipgeolocation.io/v2/ipgeo?apiKey=${process.env.IP_API_KEY}&ip=${ip}`)
+    await axios.get(`http://ip-api.com/json/${ip}?fields=49154`)
         .then(response => {
-            country = response.data.location.country_code2 || "Unknown";
+            country = response.data.countryCode || "Unknown";
         })
         .catch(error => {
             console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
@@ -198,11 +198,11 @@ function checkInActiveServers() {
     });
 
     pluginUsage.forEach((usage, pluginUUID) => {
-        upsertPluginDailyStats(pluginUUID, usage.serversCount, usage.playersCount);
+        upsertPluginHourlyStats(pluginUUID, usage.serversCount, usage.playersCount);
     });
 
-    // remove plugin stat data thats older than 90d
-    prunePluginDailyStats();
+    // remove plugin stat data outside retention window
+    prunePluginHourlyStats();
     return removedServers;
 }
 
@@ -298,6 +298,24 @@ function getAllCountries() {
     return countries;
 }
 
+function getCoreCounts() {
+    let coreCounts = {};
+    const stmt = db.prepare("SELECT core_count FROM servers");
+    stmt.all().forEach(row => {
+        const cores = row.core_count || 0;
+        if (cores < 0 || cores > 128) {
+            return; // skip invalid core counts
+        }
+
+        if (!(cores in coreCounts)) {
+            coreCounts[cores] = 1;
+        } else {
+            coreCounts[cores]++;
+        }
+    });
+    return coreCounts;
+}
+
 function getServersUsingPlugin(pluginUUID) {
     if (!pluginUUID) {
         return [];
@@ -324,5 +342,6 @@ export {
     getAllJavaVersions,
     getAllCountries,
     checkInActiveServers,
+    getCoreCounts,
     getServersUsingPlugin
 };
