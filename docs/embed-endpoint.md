@@ -7,6 +7,7 @@
 - Response is SVG (`image/svg+xml`).
 - Card is always clickable and links to `https://hstats.dev`.
 - Card always includes the logo and `hstats.dev` watermark.
+- Card does not render the plugin UUID text.
 
 ## Query Options
 All options are optional.
@@ -16,7 +17,6 @@ All options are optional.
 | `theme` | string | `light`, `dark` | `light` | Visual color theme. |
 | `layout` | string | `compact`, `stacked`, `history` | `compact` | Controls structure/format. |
 | `size` | string | `sm`, `md`, `lg` | `md` | Uses per-layout size presets. |
-| `show_id` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `true` | Hide/show plugin UUID text. |
 | `dark` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `false` | Alias toggle; if true, forces dark theme. |
 
 ## History Layout
@@ -29,7 +29,7 @@ All options are optional.
 
 ## Caching
 - In-memory cache is enabled in the API process using a `Map`.
-- Cache key includes: plugin UUID + `theme` + `layout` + `size` + `show_id`.
+- Cache key includes: plugin UUID + `theme` + `layout` + `size`.
 - Response header `X-Embed-Cache` is set to `HIT` or `MISS`.
 
 ### Cache Env Vars
@@ -66,10 +66,6 @@ History graph (light):
 History graph dark large:
 
 `/api/embed/PLUGIN_UUID/card.svg?layout=history&theme=dark&size=lg`
-
-Hide mod ID on history layout:
-
-`/api/embed/PLUGIN_UUID/card.svg?layout=history&show_id=false`
 
 ## Frontend Integration Notes
 - Use the URL directly in `<img src="...">`.

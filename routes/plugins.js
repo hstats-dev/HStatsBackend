@@ -6,7 +6,7 @@ import { getServersUsingPlugin } from '../databases/serversdb.js';
 import { addOrUpdatePlugin, deletePlugin, getListOfPlugins, getPlugin } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
-import { getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
+import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { MAX_PLUGINS_PER_USER } from '../config.js';
 
@@ -180,6 +180,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
         total_servers: totalServers,
         total_players: totalPlayers,
         history: getPluginDailyStatsLastDays(req.params.plugin_uuid),
+        all_time_peak: getPluginAllTimePeak(req.params.plugin_uuid),
         versions: versions,
         countries: countries,
         java_versions: javaVersions,

@@ -22,6 +22,29 @@ db.exec(`
     );
 `);
 
+db.exec(`
+    CREATE TABLE IF NOT EXISTS global_all_time_peaks (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        peak_servers_count INTEGER NOT NULL DEFAULT 0,
+        peak_servers_at TEXT,
+        peak_players_count INTEGER NOT NULL DEFAULT 0,
+        peak_players_at TEXT,
+        updated_at INTEGER NOT NULL DEFAULT 0
+    );
+`);
+
+db.prepare(`
+    INSERT OR IGNORE INTO global_all_time_peaks (
+        id,
+        peak_servers_count,
+        peak_servers_at,
+        peak_players_count,
+        peak_players_at,
+        updated_at
+    )
+    VALUES (1, 0, NULL, 0, NULL, 0)
+`).run();
+
 function parsePlayerCountStrict(value) {
     if (typeof value === "number") {
         if (!Number.isSafeInteger(value)) {
@@ -184,6 +207,8 @@ function checkInActiveServers() {
     const removedServers = removeStmt.run(`-${timeoutMinutes} minutes`).changes;
 
     const servers = db.prepare("SELECT players_online, plugins FROM servers").all();
+    const currentServers = servers.length;
+    const currentPlayers = servers.reduce((sum, server) => sum + clampPlayerCount(server.players_online), 0);
     const pluginUsage = new Map();
     servers.forEach(server => {
         // enforce max contribution from any single server to protect history from spoofed values
@@ -203,7 +228,48 @@ function checkInActiveServers() {
 
     // remove plugin stat data outside retention window
     prunePluginHourlyStats();
+    updateGlobalAllTimePeaks(currentServers, currentPlayers);
     return removedServers;
+}
+
+function updateGlobalAllTimePeaks(serverCount, playerCount, observedAt = new Date().toISOString()) {
+    const safeServerCount = Math.max(0, Number(serverCount) || 0);
+    const safePlayerCount = Math.max(0, Number(playerCount) || 0);
+    const now = Math.floor(Date.now() / 1000);
+
+    const stmt = db.prepare(`
+        UPDATE global_all_time_peaks
+        SET
+            peak_servers_count = CASE
+                WHEN ? > peak_servers_count THEN ?
+                ELSE peak_servers_count
+            END,
+            peak_servers_at = CASE
+                WHEN ? > peak_servers_count THEN ?
+                ELSE peak_servers_at
+            END,
+            peak_players_count = CASE
+                WHEN ? > peak_players_count THEN ?
+                ELSE peak_players_count
+            END,
+            peak_players_at = CASE
+                WHEN ? > peak_players_count THEN ?
+                ELSE peak_players_at
+            END,
+            updated_at = CASE
+                WHEN ? > peak_servers_count OR ? > peak_players_count THEN ?
+                ELSE updated_at
+            END
+        WHERE id = 1
+    `);
+
+    stmt.run(
+        safeServerCount, safeServerCount,
+        safeServerCount, observedAt,
+        safePlayerCount, safePlayerCount,
+        safePlayerCount, observedAt,
+        safeServerCount, safePlayerCount, now
+    );
 }
 
 
@@ -331,6 +397,38 @@ function getServersUsingPlugin(pluginUUID) {
         }));
 }
 
+function getGlobalAllTimePeaks() {
+    const row = db.prepare(`
+        SELECT
+            peak_servers_count,
+            peak_servers_at,
+            peak_players_count,
+            peak_players_at
+        FROM global_all_time_peaks
+        WHERE id = 1
+    `).get();
+
+    return {
+        servers: {
+            count: row?.peak_servers_count || 0,
+            at: row?.peak_servers_at || null
+        },
+        players: {
+            count: row?.peak_players_count || 0,
+            at: row?.peak_players_at || null
+        }
+    };
+}
+
+function bootstrapGlobalAllTimePeaks() {
+    const timeoutMinutes = getServerAliveTimeoutMinutes();
+    const rows = db.prepare("SELECT players_online FROM servers WHERE last_updated >= datetime('now', ?)").all(`-${timeoutMinutes} minutes`);
+    const playerCount = rows.reduce((sum, row) => sum + clampPlayerCount(row.players_online), 0);
+    updateGlobalAllTimePeaks(rows.length, playerCount);
+}
+
+bootstrapGlobalAllTimePeaks();
+
 export {
     addOrUpdateServer,
     addPluginToServer,
@@ -343,5 +441,6 @@ export {
     getAllCountries,
     checkInActiveServers,
     getCoreCounts,
-    getServersUsingPlugin
+    getServersUsingPlugin,
+    getGlobalAllTimePeaks
 };

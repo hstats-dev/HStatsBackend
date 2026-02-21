@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { getPlugin } from "../databases/plugindb.js";
 import { getServersUsingPlugin } from "../databases/serversdb.js";
-import { getPluginDailyStatsLastDays } from "../databases/pluginstatsdb.js";
+import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from "../databases/pluginstatsdb.js";
 
 const router = express.Router();
 const TARGET_URL = "https://hstats.dev";
@@ -42,10 +42,10 @@ const THEMES = {
         chartBg: "#fbfdff",
         chartGrid: "rgba(15,15,16,0.14)",
         chartAxis: "rgba(15,15,16,0.34)",
-        serversLine: "#0284c7",
-        serversFill: "rgba(2,132,199,0.16)",
-        playersLine: "#06b6d4",
-        playersFill: "rgba(6,182,212,0.14)",
+        serversLine: "#dc2626",
+        serversFill: "rgba(220,38,38,0.16)",
+        playersLine: "#16a34a",
+        playersFill: "rgba(22,163,74,0.16)",
         logoFallbackBg: "#111111",
         logoFallbackText: "#ffffff"
     },
@@ -60,10 +60,10 @@ const THEMES = {
         chartBg: "#131925",
         chartGrid: "rgba(248,249,251,0.16)",
         chartAxis: "rgba(248,249,251,0.34)",
-        serversLine: "#38bdf8",
-        serversFill: "rgba(56,189,248,0.18)",
-        playersLine: "#22d3ee",
-        playersFill: "rgba(34,211,238,0.18)",
+        serversLine: "#f87171",
+        serversFill: "rgba(248,113,113,0.2)",
+        playersLine: "#4ade80",
+        playersFill: "rgba(74,222,128,0.2)",
         logoFallbackBg: "#f8f9fb",
         logoFallbackText: "#101319"
     }
@@ -188,8 +188,7 @@ function getEmbedOptions(query = {}) {
     return {
         layout,
         size,
-        theme,
-        showId: parseBool(query.show_id, true)
+        theme
     };
 }
 
@@ -315,16 +314,12 @@ function renderCompactLayout(data, options, theme, width, height) {
 
     const titleY = Math.round(height * 0.2);
     const nameY = Math.round(height * 0.4);
-    const idY = Math.round(height * 0.53);
-    const statsY = options.showId ? Math.round(height * 0.62) : Math.round(height * 0.57);
+    const statsY = Math.round(height * 0.57);
     const statH = Math.round(height * 0.27);
     const gap = Math.max(10, Math.round(width * 0.018));
     const statW = Math.floor((contentWidth - gap) / 2);
 
     const nameFontSize = getNameFontSize(data.name.length, height);
-    const idText = options.showId
-        ? `<text x="${contentX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.065)}" font-weight="600">MOD ID: ${data.modId}</text>`
-        : "";
 
     const logoBlock = `
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
@@ -338,7 +333,6 @@ function renderCompactLayout(data, options, theme, width, height) {
 
         <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
         <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
-        ${idText}
 
         <g transform="translate(${contentX} ${statsY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
@@ -369,7 +363,8 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const titleX = logoX + logoSize + Math.round(width * 0.018);
     const titleY = logoY + Math.round(headerHeight * 0.12);
     const nameY = titleY + Math.round(headerHeight * 0.36);
-    const idY = nameY + Math.round(headerHeight * 0.26);
+    const subtitleY = nameY + Math.round(headerHeight * 0.22);
+    const subtitleY2 = subtitleY + Math.round(headerHeight * 0.22);
 
     const statW = Math.round(width * 0.15);
     const statH = Math.round(headerHeight * 0.56);
@@ -399,6 +394,8 @@ function renderHistoryLayout(data, options, theme, width, height) {
 
     const latestServers = serverValues.length > 0 ? serverValues[serverValues.length - 1] : 0;
     const latestPlayers = playerValues.length > 0 ? playerValues[playerValues.length - 1] : 0;
+    const peakServers = serverValues.length > 0 ? Math.max(...serverValues) : 0;
+    const peakPlayers = playerValues.length > 0 ? Math.max(...playerValues) : 0;
     const latestServersPoint = serversSeries.points[serversSeries.points.length - 1];
     const latestPlayersPoint = playersSeries.points[playersSeries.points.length - 1];
 
@@ -415,20 +412,19 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const firstDay = historyPoints.length > 0 ? formatDayLabel(historyPoints[0].day) : formatDayLabel(getUtcTodayDayString());
     const lastDay = historyPoints.length > 0 ? formatDayLabel(historyPoints[historyPoints.length - 1].day) : formatDayLabel(getUtcTodayDayString());
 
-    const idText = options.showId
-        ? `<text x="${titleX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.043)}" font-weight="600">MOD ID: ${data.modId}</text>`
+    const noDataText = data.historySourceRows === 0
+        ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No history yet. Showing current snapshot.</text>`
         : "";
 
-    const noDataText = data.historySourceRows === 0
-        ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No historical data yet - showing current snapshot</text>`
-        : "";
+    const allTimePeakText = `All-time: ${data.allTimePeakServers} servers | ${data.allTimePeakPlayers} players`;
 
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">HOURLY PEAK HISTORY</text>
+        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">PLUGIN HISTORY (HOURLY PEAKS)</text>
         <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
-        ${idText}
+        <text x="${titleX}" y="${subtitleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="600">30-day hourly trend (UTC). Red = servers, green = players.</text>
+        <text x="${titleX}" y="${subtitleY2}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="600">${allTimePeakText}</text>
         <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
 
         <g transform="translate(${statsX2} ${statsY})">
@@ -453,14 +449,14 @@ function renderHistoryLayout(data, options, theme, width, height) {
             ${latestServersPoint ? `<circle cx="${latestServersPoint.x.toFixed(2)}" cy="${latestServersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.serversLine}"/>` : ""}
             ${latestPlayersPoint ? `<circle cx="${latestPlayersPoint.x.toFixed(2)}" cy="${latestPlayersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.playersLine}"/>` : ""}
             <text x="${plotX}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${firstDay}</text>
-            <text x="${(plotX + plotW).toFixed(2)}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${lastDay}</text>
+            <text x="${(plotX + plotW).toFixed(2)}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${lastDay} UTC</text>
             <g transform="translate(${plotX} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
                 <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.serversLine}" />
-                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}">Servers (${formatNumber(latestServers)})</text>
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.serversLine}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="700">Servers: now ${formatNumber(latestServers)}, peak ${formatNumber(peakServers)}</text>
             </g>
-            <g transform="translate(${plotX + Math.round(width * 0.19)} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
+            <g transform="translate(${plotX + Math.round(width * 0.39)} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
                 <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.playersLine}" />
-                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}">Players (${formatNumber(latestPlayers)})</text>
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.playersLine}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="700">Players: now ${formatNumber(latestPlayers)}, peak ${formatNumber(peakPlayers)}</text>
             </g>
             ${noDataText}
         </g>
@@ -471,7 +467,7 @@ function renderHistoryLayout(data, options, theme, width, height) {
 
 function renderStackedLayout(data, options, theme, width, height) {
     const padding = Math.round(width * 0.05);
-    const topRowHeight = options.showId ? Math.round(height * 0.56) : Math.round(height * 0.5);
+    const topRowHeight = Math.round(height * 0.5);
     const logoSize = Math.round(height * 0.24);
 
     const logoX = padding;
@@ -480,7 +476,6 @@ function renderStackedLayout(data, options, theme, width, height) {
     const headerX = logoX + logoSize + Math.round(width * 0.03);
     const titleY = padding + Math.round(height * 0.09);
     const nameY = titleY + Math.round(height * 0.17);
-    const idY = nameY + Math.round(height * 0.11);
 
     const watermarkX = width - padding;
     const watermarkY = padding + Math.round(height * 0.1);
@@ -491,9 +486,6 @@ function renderStackedLayout(data, options, theme, width, height) {
     const statW = Math.floor((width - (padding * 2) - gap) / 2);
 
     const nameFontSize = getNameFontSize(data.name.length, height);
-    const idText = options.showId
-        ? `<text x="${headerX}" y="${idY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.055)}" font-weight="600">MOD ID: ${data.modId}</text>`
-        : "";
 
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
@@ -502,7 +494,6 @@ function renderStackedLayout(data, options, theme, width, height) {
 
         <text x="${headerX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
         <text x="${headerX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
-        ${idText}
 
         <g transform="translate(${padding} ${statY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="10" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
@@ -549,7 +540,7 @@ router.get("/:mod/card.svg", (req, res) => {
     const options = getEmbedOptions(req.query || {});
 
     const modId = mod.trim();
-    const cacheKey = `${modId}|${options.layout}|${options.size}|${options.theme}|show_id:${options.showId ? 1 : 0}`;
+    const cacheKey = `${modId}|${options.layout}|${options.size}|${options.theme}`;
     const cachedSvg = getCachedSvg(cacheKey);
     if (cachedSvg) {
         res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
@@ -568,6 +559,7 @@ router.get("/:mod/card.svg", (req, res) => {
     });
 
     const rawHistoryRows = getPluginDailyStatsLastDays(modId);
+    const allTimePeak = getPluginAllTimePeak(modId);
     const history = Array.isArray(rawHistoryRows)
         ? rawHistoryRows
             .map((row) => ({
@@ -589,9 +581,10 @@ router.get("/:mod/card.svg", (req, res) => {
 
     const data = {
         name: escapeXml(pluginDisplayName),
-        modId: escapeXml(truncateText(modId, 44)),
         servers: formatNumber(servers.length),
         players: formatNumber(playerCount),
+        allTimePeakServers: formatNumber(allTimePeak?.servers?.count || 0),
+        allTimePeakPlayers: formatNumber(allTimePeak?.players?.count || 0),
         history: historyWithFallback,
         historySourceRows: history.length
     };

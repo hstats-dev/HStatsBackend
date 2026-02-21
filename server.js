@@ -4,7 +4,7 @@ import SQLiteStore from "connect-sqlite3";
 import cors from "cors";
 import requestIp from "request-ip";
 import { configDotenv } from "dotenv";
-import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getCoreCounts, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
+import { checkInActiveServers, getAllCountries, getAllJavaVersions, getAllOSNames, getCoreCounts, getGlobalAllTimePeaks, getTotalPlayersOnline, getTotalServers } from "./databases/serversdb.js";
 import { getSessionMaxAgeMs, getTotalAccounts } from "./databases/accountsdb.js";
 import pluginRoutes from "./routes/plugins.js";
 import accountRoutes from "./routes/accounts.js";
@@ -28,6 +28,7 @@ let countries = getAllCountries();
 let userCount = getTotalAccounts();
 let coreCount = getCoreCounts();
 let pluginCount = getTotalPlugins();
+let allTimePeak = getGlobalAllTimePeaks();
 
 if (process.env.PRODUCTION === "true")
     app.set("trust proxy", 1);
@@ -73,7 +74,8 @@ app.get("/api/server-data", (req, res) => {
         countries: countries,
         user_count: userCount,
         plugin_count: pluginCount,
-        core_count: coreCount
+        core_count: coreCount,
+        all_time_peak: allTimePeak
     });
 });
 
@@ -103,5 +105,6 @@ setInterval(() => {
     userCount = getTotalAccounts();
     coreCount = getCoreCounts();
     pluginCount = getTotalPlugins();
+    allTimePeak = getGlobalAllTimePeaks();
     console.log(`Currently ${onlineServers} online servers with ${onlinePlayers} total players.`);
 }, process.env.SERVER_ALIVE_CHECK_INTERVAL * 60 * 1000); // minutes
