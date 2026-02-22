@@ -13,6 +13,30 @@ import { MAX_PLUGINS_PER_USER } from '../config.js';
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
 
+function getLatestPluginVersionForServer(pluginsValue, pluginUUID) {
+    if (typeof pluginsValue !== "string" || !pluginsValue.trim()) {
+        return null;
+    }
+
+    let latestVersion = null;
+    pluginsValue.split(",").forEach((entryRaw) => {
+        const entry = String(entryRaw || "").trim();
+        if (!entry) {
+            return;
+        }
+
+        const [entryPluginUUID, entryVersion] = entry.split("@");
+        if ((entryPluginUUID || "").trim() !== pluginUUID) {
+            return;
+        }
+
+        const normalizedVersion = (entryVersion || "").trim() || "Unknown";
+        latestVersion = normalizedVersion;
+    });
+
+    return latestVersion;
+}
+
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
@@ -133,16 +157,13 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
 
     servers.forEach(server => {
         totalPlayers += server.players_online;
-        const pluginEntries = server.plugins ? server.plugins.split(",") : [];
-        pluginEntries.forEach(entry => {
-            const [pluginUUID, version] = entry.split("@");
-            if (pluginUUID === req.params.plugin_uuid && version) {
-                if (!(version in versions)) {
-                    versions[version] = 0;
-                }
-                versions[version]++;
+        const version = getLatestPluginVersionForServer(server.plugins, req.params.plugin_uuid);
+        if (version) {
+            if (!(version in versions)) {
+                versions[version] = 0;
             }
-        });
+            versions[version]++;
+        }
         if (server.country) {
             if (!(server.country in countries)) {
                 countries[server.country] = 0;

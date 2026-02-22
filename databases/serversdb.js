@@ -108,6 +108,7 @@ function normalizeStoredPlayerCounts() {
 }
 
 normalizeStoredPlayerCounts();
+normalizeStoredPluginEntries();
 
 // Initial request to add an online server
 async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion = "", javaVersion = "", coreCount = 0) {
@@ -140,12 +141,47 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
 function addPluginToServer(uuid, pluginUUID, version = "Unknown") {
     const getStmt = db.prepare("SELECT plugins FROM servers WHERE uuid = ?");
     const row = getStmt.get(uuid);
-    let plugins = row ? row.plugins ? row.plugins.split(",") : [] : [];
-    if (!plugins.includes(pluginUUID + (version ? `@${version}` : ""))) {
-        plugins.push(pluginUUID + (version ? `@${version}` : ""));
-        const updatedPlugins = plugins.join(",");
+    const currentPlugins = row?.plugins || "";
+    const normalizedVersion = (typeof version === "string" && version.trim()) ? version.trim() : "Unknown";
+    const targetEntry = `${pluginUUID}@${normalizedVersion}`;
+
+    const nextEntries = [];
+    let found = false;
+    let changed = false;
+
+    parsePluginEntries(currentPlugins).forEach((entry) => {
+        const { pluginUUID: existingUUID, version: existingVersion } = parsePluginUUIDAndVersion(entry);
+        if (!existingUUID) {
+            changed = true;
+            return;
+        }
+
+        if (existingUUID !== pluginUUID) {
+            nextEntries.push(`${existingUUID}@${existingVersion}`);
+            return;
+        }
+
+        if (!found) {
+            found = true;
+            nextEntries.push(targetEntry);
+            if (`${existingUUID}@${existingVersion}` !== targetEntry) {
+                changed = true;
+            }
+            return;
+        }
+
+        // Duplicate entry for same plugin UUID; drop it.
+        changed = true;
+    });
+
+    if (!found) {
+        nextEntries.push(targetEntry);
+        changed = true;
+    }
+
+    if (changed) {
         const updateStmt = db.prepare("UPDATE servers SET plugins = ? WHERE uuid = ?");
-        const result = updateStmt.run(updatedPlugins, uuid);
+        const result = updateStmt.run(nextEntries.join(","), uuid);
         return result.changes > 0;
     }
     return false;
@@ -178,6 +214,51 @@ function parsePluginUUID(entry) {
     }
     const [pluginUUID] = entry.split("@");
     return pluginUUID || "";
+}
+
+function parsePluginUUIDAndVersion(entry) {
+    if (!entry || typeof entry !== "string") {
+        return { pluginUUID: "", version: "Unknown" };
+    }
+    const [pluginUUIDRaw, versionRaw] = entry.split("@");
+    const pluginUUID = (pluginUUIDRaw || "").trim();
+    const version = (versionRaw || "").trim() || "Unknown";
+    return { pluginUUID, version };
+}
+
+function normalizePluginEntriesValue(pluginsValue) {
+    const latestVersionByUUID = new Map();
+    parsePluginEntries(pluginsValue).forEach((entry) => {
+        const { pluginUUID, version } = parsePluginUUIDAndVersion(entry);
+        if (!pluginUUID) {
+            return;
+        }
+        // Keep one entry per plugin UUID per server; newest mention wins.
+        latestVersionByUUID.set(pluginUUID, version);
+    });
+
+    return Array.from(latestVersionByUUID.entries())
+        .map(([pluginUUID, version]) => `${pluginUUID}@${version}`)
+        .join(",");
+}
+
+function normalizeStoredPluginEntries() {
+    const rows = db.prepare("SELECT uuid, plugins FROM servers").all();
+    const updateStmt = db.prepare("UPDATE servers SET plugins = ? WHERE uuid = ?");
+    let normalizedRows = 0;
+
+    rows.forEach((row) => {
+        const current = typeof row.plugins === "string" ? row.plugins.trim() : "";
+        const normalized = normalizePluginEntriesValue(current);
+        if (normalized !== current) {
+            updateStmt.run(normalized, row.uuid);
+            normalizedRows += 1;
+        }
+    });
+
+    if (normalizedRows > 0) {
+        console.warn(`Normalized plugin entries for ${normalizedRows} servers (deduped plugin UUID/version entries).`);
+    }
 }
 
 function getPluginUUIDsForServer(pluginsValue) {
