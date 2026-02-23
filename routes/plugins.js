@@ -3,7 +3,7 @@ import {v4 as uuidv4} from 'uuid';
 import BadWordsNext from 'bad-words-next';
 import en from 'bad-words-next/lib/en';
 import { getServersUsingPlugin } from '../databases/serversdb.js';
-import { addOrUpdatePlugin, deletePlugin, getListOfPlugins, getPlugin } from '../databases/plugindb.js';
+import { addOrUpdatePlugin, deletePlugin, getAllPlugins, getPlugin } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
 import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
@@ -108,16 +108,41 @@ router.post("/delete-plugin", requireSession, (req, res) => {
 });
 
 router.get("/list-plugins", (req, res) => {
-    const searchTerm = req.query.search || "";
-    const maxResults = Math.min(parseInt(req.query.max) || 50, 50);
-    const page = Math.max(parseInt(req.query.page) || 1, 1);
-    const plugins = getListOfPlugins(searchTerm).slice((page - 1) * maxResults, page * maxResults);
+    const searchTerm = typeof req.query.search === "string" ? req.query.search : "";
+    const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 50, 50));
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const allPlugins = getAllPlugins(searchTerm);
+
+    const pluginRows = allPlugins.map((plugin) => {
+        const serversUsing = getServersUsingPlugin(plugin.uuid);
+        return {
+            plugin,
+            serversUsingCount: serversUsing.length,
+            totalPlayers: serversUsing.reduce((sum, server) => sum + server.players_online, 0)
+        };
+    });
+
+    // Global ranking by usage before pagination.
+    pluginRows.sort((a, b) => {
+        if (b.serversUsingCount !== a.serversUsingCount) {
+            return b.serversUsingCount - a.serversUsingCount;
+        }
+
+        // Stable tie-breaker for deterministic ordering.
+        return String(a.plugin.name || "").localeCompare(String(b.plugin.name || ""));
+    });
+
+    const totalPlugins = pluginRows.length;
+    const totalPages = Math.ceil(totalPlugins / maxResults);
+    const pageOffset = (page - 1) * maxResults;
+    const pageRows = pluginRows.slice(pageOffset, pageOffset + maxResults);
+
     const response = {};
-    plugins.forEach(plugin => {
+    pageRows.forEach(({ plugin, serversUsingCount, totalPlayers }) => {
         response[plugin.uuid] = {
             plugin_info: plugin,
-            servers_using: getServersUsingPlugin(plugin.uuid).length,
-            total_players: getServersUsingPlugin(plugin.uuid).reduce((sum, server) => sum + server.players_online, 0),
+            servers_using: serversUsingCount,
+            total_players: totalPlayers,
             daily_stats: getPluginDailyStatsLastDays(plugin.uuid),
             developer_info: (() => {
                 const account = getAccountThatOwnsPlugin(plugin.uuid);
@@ -130,7 +155,7 @@ router.get("/list-plugins", (req, res) => {
                     return null;
                 }
             })(),
-            pages: Math.ceil(getListOfPlugins(searchTerm).length / maxResults)
+            pages: totalPages
         };
     });
     res.status(200).json({ plugins: response });

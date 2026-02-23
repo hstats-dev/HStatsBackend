@@ -26,14 +26,14 @@ function addOrUpdatePlugin(uuid, name) {
     }
 }
 
-function getListOfPlugins(searchTerm = "") {
+function getListOfPlugins(searchTerm = "", maxResults = 50, page = 1) {
     let stmt;
     if (searchTerm) {
-        stmt = db.prepare("SELECT * FROM plugins WHERE name LIKE ? ORDER BY added_on DESC");
-        return stmt.all(`%${searchTerm}%`);
+        stmt = db.prepare("SELECT * FROM plugins WHERE name LIKE ? ORDER BY added_on DESC LIMIT ? OFFSET ?");
+        return stmt.all(`%${searchTerm}%`, maxResults, (page - 1) * maxResults);
     } else {
-        stmt = db.prepare("SELECT * FROM plugins ORDER BY added_on DESC");
-        return stmt.all();
+        stmt = db.prepare("SELECT * FROM plugins ORDER BY added_on DESC LIMIT ? OFFSET ?");
+        return stmt.all(maxResults, (page - 1) * maxResults);
     }
 }
 
@@ -47,9 +47,24 @@ function getPlugin(uuid) {
     return stmt.get(uuid);
 }
 
-function getTotalPlugins() {
+function getTotalPlugins(searchTerm = "") {
+    if (searchTerm) {
+        const row = db.prepare("SELECT COUNT(*) AS count FROM plugins WHERE name LIKE ?").get(`%${searchTerm}%`);
+        return row ? row.count : 0;
+    }
+
     const row = db.prepare("SELECT COUNT(*) AS count FROM plugins").get();
     return row ? row.count : 0;
+}
+
+function getAllPlugins(searchTerm = "") {
+    if (searchTerm) {
+        const stmt = db.prepare("SELECT * FROM plugins WHERE name LIKE ? ORDER BY added_on DESC");
+        return stmt.all(`%${searchTerm}%`);
+    }
+
+    const stmt = db.prepare("SELECT * FROM plugins ORDER BY added_on DESC");
+    return stmt.all();
 }
 
 export {
@@ -57,5 +72,6 @@ export {
     deletePlugin,
     getPlugin,
     getTotalPlugins,
-    getListOfPlugins
+    getListOfPlugins,
+    getAllPlugins
 }
