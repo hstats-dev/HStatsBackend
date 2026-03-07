@@ -2,7 +2,15 @@ import betterSQL from "better-sqlite3";
 import axios from "axios";
 import { configDotenv } from "dotenv";
 import { prunePluginHourlyStats, upsertPluginHourlyStats } from "./pluginstatsdb.js";
-import { MAX_PLAYERS_ONLINE_PER_SERVER, VALID_JAVA_VERSIONS, VALID_OS_NAMES, AMOUNT_NEEDED_TO_DISPLAY } from "../config.js";
+import {
+    AMOUNT_NEEDED_TO_DISPLAY,
+    MAX_PLAYERS_ONLINE_PER_SERVER,
+    SERVER_PLAYER_SPIKE_BURST,
+    SERVER_PLAYER_SPIKE_PER_MINUTE,
+    SERVER_SPIKE_GUARD_WINDOW_MINUTES,
+    VALID_JAVA_VERSIONS,
+    VALID_OS_NAMES
+} from "../config.js";
 configDotenv();
 
 // Plugin Format: pluginUUID@version (version is optional)
@@ -30,6 +38,15 @@ db.exec(`
         peak_players_count INTEGER NOT NULL DEFAULT 0,
         peak_players_at TEXT,
         updated_at INTEGER NOT NULL DEFAULT 0
+    );
+`);
+
+db.exec(`
+    CREATE TABLE IF NOT EXISTS global_stats_hourly (
+        hour_start TEXT PRIMARY KEY,
+        servers_count INTEGER NOT NULL,
+        players_count INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
     );
 `);
 
@@ -87,6 +104,93 @@ function clampPlayerCount(value) {
     return Math.floor(numeric);
 }
 
+function formatUtcHourString(date) {
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(date.getUTCDate()).padStart(2, "0");
+    const h = String(date.getUTCHours()).padStart(2, "0");
+    return `${y}-${m}-${d} ${h}:00:00`;
+}
+
+function toUtcHourString(value, { allowDayOnly = false, dayAsEnd = false } = {}) {
+    if (!value) {
+        return formatUtcHourString(new Date());
+    }
+
+    if (typeof value !== "string") {
+        throw new Error("hour must be a string");
+    }
+
+    const trimmed = value.trim();
+    if (allowDayOnly && /^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        return `${trimmed} ${dayAsEnd ? "23:00:00" : "00:00:00"}`;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
+        return `${trimmed.slice(0, 13)}:00:00`;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(trimmed)) {
+        const parsed = new Date(trimmed);
+        if (Number.isNaN(parsed.getTime())) {
+            throw new Error("Invalid ISO UTC datetime");
+        }
+        return formatUtcHourString(parsed);
+    }
+
+    throw new Error("hour must be YYYY-MM-DD HH:MM:SS or ISO UTC datetime");
+}
+
+function toUtcHourIsoString(hourStart) {
+    return `${String(hourStart).replace(" ", "T")}Z`;
+}
+
+function parseSqliteTimestampToMs(sqliteTimestamp) {
+    if (!sqliteTimestamp || typeof sqliteTimestamp !== "string") {
+        return null;
+    }
+
+    const normalized = sqliteTimestamp.includes("T")
+        ? sqliteTimestamp
+        : sqliteTimestamp.replace(" ", "T");
+    const withTimezone = /z$/i.test(normalized) ? normalized : `${normalized}Z`;
+    const parsedMs = Date.parse(withTimezone);
+    if (Number.isNaN(parsedMs)) {
+        return null;
+    }
+    return parsedMs;
+}
+
+function applyPerServerPlayerSpikeGuard(previousCount, previousUpdatedAt, incomingCount) {
+    const previousPlayers = clampPlayerCount(previousCount);
+    const incomingPlayers = clampPlayerCount(incomingCount);
+    if (incomingPlayers <= previousPlayers) {
+        return incomingPlayers;
+    }
+
+    const previousUpdatedMs = parseSqliteTimestampToMs(previousUpdatedAt);
+    if (!Number.isFinite(previousUpdatedMs)) {
+        return incomingPlayers;
+    }
+
+    const elapsedMinutes = Math.max(0, (Date.now() - previousUpdatedMs) / 60000);
+    if (elapsedMinutes > SERVER_SPIKE_GUARD_WINDOW_MINUTES) {
+        return incomingPlayers;
+    }
+
+    const allowedIncrease = SERVER_PLAYER_SPIKE_BURST + (elapsedMinutes * SERVER_PLAYER_SPIKE_PER_MINUTE);
+    const maxAllowed = Math.min(
+        MAX_PLAYERS_ONLINE_PER_SERVER,
+        previousPlayers + Math.max(0, Math.floor(allowedIncrease))
+    );
+
+    if (incomingPlayers > maxAllowed) {
+        return maxAllowed;
+    }
+
+    return incomingPlayers;
+}
+
 function normalizeStoredPlayerCounts() {
     const stmt = db.prepare(`
         UPDATE servers
@@ -117,8 +221,12 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
     const getStmt = db.prepare("SELECT * FROM servers WHERE uuid = ?");
     const row = getStmt.get(uuid);
     if (row) {
+        const guardedPlayerCount = applyPerServerPlayerSpikeGuard(row.players_online, row.last_updated, safePlayerCount);
+        if (guardedPlayerCount < safePlayerCount) {
+            console.warn(`Suspicious player spike clamped for server ${uuid}: ${safePlayerCount} -> ${guardedPlayerCount}`);
+        }
         const updateStmt = db.prepare("UPDATE servers SET players_online = ?, last_updated = CURRENT_TIMESTAMP WHERE uuid = ?");
-        return updateStmt.run(safePlayerCount, uuid).changes > 0;
+        return updateStmt.run(guardedPlayerCount, uuid).changes > 0;
     }
 
     let country = "Unknown";
@@ -170,7 +278,7 @@ function addPluginToServer(uuid, pluginUUID, version = "Unknown") {
             return;
         }
 
-        // Duplicate entry for same plugin UUID; drop it.
+        // Duplicate entry for same plugin UUID then drop it.
         changed = true;
     });
 
@@ -309,8 +417,38 @@ function checkInActiveServers() {
 
     // remove plugin stat data outside retention window
     prunePluginHourlyStats();
+    upsertGlobalHourlyStats(currentServers, currentPlayers);
     updateGlobalAllTimePeaks(currentServers, currentPlayers);
     return removedServers;
+}
+
+function upsertGlobalHourlyStats(serverCount, playerCount, hourStart = null) {
+    const safeServerCount = Math.max(0, Number(serverCount) || 0);
+    const safePlayerCount = Math.max(0, Number(playerCount) || 0);
+    const bucket = toUtcHourString(hourStart);
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+        INSERT INTO global_stats_hourly (hour_start, servers_count, players_count, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(hour_start) DO UPDATE SET
+            servers_count = CASE
+                WHEN excluded.servers_count > global_stats_hourly.servers_count
+                THEN excluded.servers_count
+                ELSE global_stats_hourly.servers_count
+            END,
+            players_count = CASE
+                WHEN excluded.players_count > global_stats_hourly.players_count
+                THEN excluded.players_count
+                ELSE global_stats_hourly.players_count
+            END,
+            updated_at = CASE
+                WHEN excluded.servers_count > global_stats_hourly.servers_count
+                  OR excluded.players_count > global_stats_hourly.players_count
+                THEN excluded.updated_at
+                ELSE global_stats_hourly.updated_at
+            END
+    `).run(bucket, safeServerCount, safePlayerCount, now);
 }
 
 function updateGlobalAllTimePeaks(serverCount, playerCount, observedAt = new Date().toISOString()) {
@@ -351,6 +489,58 @@ function updateGlobalAllTimePeaks(serverCount, playerCount, observedAt = new Dat
         safePlayerCount, observedAt,
         safeServerCount, safePlayerCount, now
     );
+}
+
+function setGlobalAllTimePeaksExact({
+    serversCount,
+    serversAt,
+    playersCount,
+    playersAt
+} = {}) {
+    const current = db.prepare(`
+        SELECT
+            peak_servers_count,
+            peak_servers_at,
+            peak_players_count,
+            peak_players_at
+        FROM global_all_time_peaks
+        WHERE id = 1
+    `).get() || {
+        peak_servers_count: 0,
+        peak_servers_at: null,
+        peak_players_count: 0,
+        peak_players_at: null
+    };
+
+    const toSafeInt = (value, fallback) => {
+        if (value === undefined) {
+            return Math.max(0, Number(fallback) || 0);
+        }
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric) || numeric <= 0) {
+            return 0;
+        }
+        return Math.floor(numeric);
+    };
+
+    const nextServersCount = toSafeInt(serversCount, current.peak_servers_count);
+    const nextPlayersCount = toSafeInt(playersCount, current.peak_players_count);
+    const nextServersAt = serversAt === undefined ? (current.peak_servers_at || null) : (serversAt || null);
+    const nextPlayersAt = playersAt === undefined ? (current.peak_players_at || null) : (playersAt || null);
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+        UPDATE global_all_time_peaks
+        SET
+            peak_servers_count = ?,
+            peak_servers_at = ?,
+            peak_players_count = ?,
+            peak_players_at = ?,
+            updated_at = ?
+        WHERE id = 1
+    `).run(nextServersCount, nextServersAt, nextPlayersCount, nextPlayersAt, now);
+
+    return getGlobalAllTimePeaks();
 }
 
 
@@ -478,6 +668,28 @@ function getServersUsingPlugin(pluginUUID) {
         }));
 }
 
+function removePluginFromAllServers(pluginUUID) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        return 0;
+    }
+
+    const rows = db.prepare("SELECT uuid, plugins FROM servers WHERE plugins LIKE ?").all(`%${pluginUUID}%`);
+    const updateStmt = db.prepare("UPDATE servers SET plugins = ? WHERE uuid = ?");
+    let changes = 0;
+
+    rows.forEach((row) => {
+        const filtered = parsePluginEntries(row.plugins)
+            .filter((entry) => parsePluginUUID(entry) !== pluginUUID);
+        const nextValue = filtered.join(",");
+        if (nextValue !== (row.plugins || "")) {
+            updateStmt.run(nextValue, row.uuid);
+            changes += 1;
+        }
+    });
+
+    return changes;
+}
+
 function getGlobalAllTimePeaks() {
     const row = db.prepare(`
         SELECT
@@ -501,6 +713,68 @@ function getGlobalAllTimePeaks() {
     };
 }
 
+function getGlobalHourlyStats(fromHour, toHour) {
+    const fromStr = toUtcHourString(fromHour, { allowDayOnly: true, dayAsEnd: false });
+    const toStr = toUtcHourString(toHour, { allowDayOnly: true, dayAsEnd: true });
+
+    const rows = db.prepare(`
+        SELECT hour_start, servers_count, players_count
+        FROM global_stats_hourly
+        WHERE hour_start >= ? AND hour_start <= ?
+        ORDER BY hour_start ASC
+    `).all(fromStr, toStr);
+
+    return rows.map((row) => ({
+        hour_start: toUtcHourIsoString(row.hour_start),
+        servers_count: row.servers_count,
+        players_count: row.players_count
+    }));
+}
+
+function getGlobalHourlyStatsLastDays(days = 30) {
+    if (!Number.isInteger(days) || days < 1) {
+        throw new Error("days must be an integer >= 1");
+    }
+
+    const rows = db.prepare(`
+        SELECT hour_start, servers_count, players_count
+        FROM global_stats_hourly
+        WHERE hour_start >= datetime('now', ?)
+        ORDER BY hour_start ASC
+    `).all(`-${days} days`);
+
+    return rows.map((row) => ({
+        hour_start: toUtcHourIsoString(row.hour_start),
+        servers_count: row.servers_count,
+        players_count: row.players_count
+    }));
+}
+
+function getGlobalHourlyStatsAll(limit = null) {
+    if (limit !== null && (!Number.isInteger(limit) || limit < 1)) {
+        throw new Error("limit must be null or an integer >= 1");
+    }
+
+    const rows = limit === null
+        ? db.prepare(`
+            SELECT hour_start, servers_count, players_count
+            FROM global_stats_hourly
+            ORDER BY hour_start ASC
+        `).all()
+        : db.prepare(`
+            SELECT hour_start, servers_count, players_count
+            FROM global_stats_hourly
+            ORDER BY hour_start DESC
+            LIMIT ?
+        `).all(limit).reverse();
+
+    return rows.map((row) => ({
+        hour_start: toUtcHourIsoString(row.hour_start),
+        servers_count: row.servers_count,
+        players_count: row.players_count
+    }));
+}
+
 function bootstrapGlobalAllTimePeaks() {
     const timeoutMinutes = getServerAliveTimeoutMinutes();
     const rows = db.prepare("SELECT players_online FROM servers WHERE last_updated >= datetime('now', ?)").all(`-${timeoutMinutes} minutes`);
@@ -509,6 +783,7 @@ function bootstrapGlobalAllTimePeaks() {
 }
 
 bootstrapGlobalAllTimePeaks();
+upsertGlobalHourlyStats(getTotalServers(), getTotalPlayersOnline());
 
 export {
     addOrUpdateServer,
@@ -523,5 +798,10 @@ export {
     checkInActiveServers,
     getCoreCounts,
     getServersUsingPlugin,
-    getGlobalAllTimePeaks
+    getGlobalAllTimePeaks,
+    setGlobalAllTimePeaksExact,
+    removePluginFromAllServers,
+    getGlobalHourlyStats,
+    getGlobalHourlyStatsLastDays,
+    getGlobalHourlyStatsAll
 };

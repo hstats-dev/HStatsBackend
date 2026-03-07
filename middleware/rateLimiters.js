@@ -1,5 +1,11 @@
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
-import { AUTH_RATE_LIMIT_MAX, AUTH_RATE_LIMIT_WINDOW_MS, SERVER_INGEST_RATE_LIMIT_MAX, SERVER_INGEST_RATE_LIMIT_WINDOW_MS } from "../config.js";
+import {
+    AUTH_RATE_LIMIT_MAX,
+    AUTH_RATE_LIMIT_WINDOW_MS,
+    SERVER_INGEST_IP_RATE_LIMIT_MAX,
+    SERVER_INGEST_RATE_LIMIT_MAX,
+    SERVER_INGEST_RATE_LIMIT_WINDOW_MS
+} from "../config.js";
 
 function parsePositiveIntEnv(name, fallback) {
     const raw = process.env[name];
@@ -55,7 +61,15 @@ const serverIngestRateLimiter = createJsonRateLimit({
     }
 });
 
+const serverIngestIpRateLimiter = createJsonRateLimit({
+    windowMs: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_WINDOW_MS", SERVER_INGEST_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("SERVER_INGEST_IP_RATE_LIMIT_MAX", SERVER_INGEST_IP_RATE_LIMIT_MAX),
+    message: "Too many server update requests from this IP. Try again later.",
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip || "")}`
+});
+
 export {
     authRateLimiter,
-    serverIngestRateLimiter
+    serverIngestRateLimiter,
+    serverIngestIpRateLimiter
 };

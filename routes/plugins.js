@@ -128,8 +128,15 @@ router.get("/list-plugins", (req, res) => {
             return b.serversUsingCount - a.serversUsingCount;
         }
 
-        // Stable tie-breaker for deterministic ordering.
-        return String(a.plugin.name || "").localeCompare(String(b.plugin.name || ""));
+        // Keep newest plugins first when server counts are tied.
+        const addedA = String(a.plugin.added_on || "");
+        const addedB = String(b.plugin.added_on || "");
+        if (addedA !== addedB) {
+            return addedB.localeCompare(addedA);
+        }
+
+        // Final deterministic tie-breaker.
+        return String(a.plugin.uuid || "").localeCompare(String(b.plugin.uuid || ""));
     });
 
     const totalPlugins = pluginRows.length;

@@ -4,7 +4,7 @@ import en from 'bad-words-next/lib/en';
 import { addOrUpdateServer, addPluginToServer, getServer } from '../databases/serversdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { getPlugin } from '../databases/plugindb.js';
-import { serverIngestRateLimiter } from '../middleware/rateLimiters.js';
+import { serverIngestIpRateLimiter, serverIngestRateLimiter } from '../middleware/rateLimiters.js';
 import { MAX_PLAYERS_ONLINE_PER_SERVER } from '../config.js';
 
 const router = express.Router();
@@ -41,10 +41,18 @@ function parseStrictNonNegativeInt(value) {
     return parsed;
 }
 
+function isCanonicalUuid(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    const uuid = value.trim();
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(uuid);
+}
+
 // Endpoint to add a new server, this is called when a server first comes online
-router.post("/update-server", serverIngestRateLimiter, async (req, res) => {
-    if (!req.body.server_uuid)
-        return res.status(400).json({ error: "Missing server_uuid parameter" });
+router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter, async (req, res) => {
+    if (!req.body.server_uuid || !isCanonicalUuid(req.body.server_uuid))
+        return res.status(400).json({ error: "server_uuid must be a valid UUID" });
     const playersOnline = parseStrictNonNegativeInt(req.body.players_online);
     if (playersOnline === null || playersOnline > MAX_PLAYERS_ONLINE_PER_SERVER)
         return res.status(400).json({ error: "players_online must be an integer" });
@@ -83,14 +91,18 @@ router.post("/update-server", serverIngestRateLimiter, async (req, res) => {
 });
 
 // Endpoint sent by the server to add a plugin to its list
-router.post("/add-plugin", serverIngestRateLimiter, (req, res) => {
+router.post("/add-plugin", serverIngestIpRateLimiter, serverIngestRateLimiter, (req, res) => {
     console.log(JSON.stringify(req.body));
 
-    if (!req.body.server_uuid || typeof req.body.server_uuid !== "string" || req.body.server_uuid.length !== 36)
-        return res.status(400).json({ error: "Missing server_uuid parameter" });
+    if (!req.body.server_uuid || !isCanonicalUuid(req.body.server_uuid))
+        return res.status(400).json({ error: "server_uuid must be a valid UUID" });
     const pluginUuid = stripPluginEntryDelimiters(req.body.plugin_uuid);
-    if (!pluginUuid)
-        return res.status(400).json({ error: "Missing plugin_uuid parameter" });
+    if (!pluginUuid || !isCanonicalUuid(pluginUuid))
+        return res.status(400).json({ error: "plugin_uuid must be a valid UUID" });
+    const plugin = getPlugin(pluginUuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
     const pluginVersionInput = typeof req.body.plugin_version === "string" && req.body.plugin_version.trim()
         ? stripPluginEntryDelimiters(req.body.plugin_version)
         : "Unknown";
@@ -104,7 +116,7 @@ router.post("/add-plugin", serverIngestRateLimiter, (req, res) => {
     if (addPluginToServer(req.body.server_uuid, pluginUuid, pluginVersion)) {
         console.log("Added plugin " + pluginUuid + " to server " + req.body.server_uuid + " with version " + pluginVersion);
         addToRecentActivity(MessageType.MOD_REGISTERED_TO_SERVER, {
-            mod_name: getPlugin(pluginUuid)?.name || pluginUuid.substring(0, 6),
+            mod_name: plugin.name || pluginUuid.substring(0, 6),
             server_uuid: req.body.server_uuid.substring(0, 6)
         });
         res.json({ status: "success" });

@@ -11,9 +11,16 @@ export const MAX_PLUGINS_PER_USER = 10; // how many plugins can a user have acce
 // Authentication Rate Limiting
 export const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 export const AUTH_RATE_LIMIT_MAX = 10;
+
 // Server Ingest Rate Limiting
 export const SERVER_INGEST_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 export const SERVER_INGEST_RATE_LIMIT_MAX = 300;
+export const SERVER_INGEST_IP_RATE_LIMIT_MAX = 600;
+
+// Ingest anomaly guards
+export const SERVER_SPIKE_GUARD_WINDOW_MINUTES = 5; // time window to check for player count spikes
+export const SERVER_PLAYER_SPIKE_BURST = 40;
+export const SERVER_PLAYER_SPIKE_PER_MINUTE = 100;
 
 /*
     * Stat Constants
@@ -22,6 +29,9 @@ export const VALID_OS_NAMES = ["Windows 10", "Windows 11", "Windows 95", "Window
 export const VALID_JAVA_VERSIONS = ["8", "11", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"];
 export const AMOUNT_NEEDED_TO_DISPLAY = 5; // amount of "unique" of either OS name or Java version needed to be categorized outside of "other" and in its own
 export const PLUGIN_HISTORY_DAYS = 30; // keep and return plugin usage history for the last 30 days
+export const PLUGIN_HISTORY_SPIKE_MULTIPLIER = 8; // value must be >= this multiple of both neighboring hours to be considered a spike
+export const PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA = 750; // minimum absolute players gap from neighbor average before smoothing
+export const PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA = 20; // minimum absolute servers gap from neighbor average before smoothing
 
 /*
     * Account Constants

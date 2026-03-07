@@ -203,6 +203,39 @@ function setCurseforgeLink(accountId, curseforgeLink) {
     updateStmt.run(curseforgeLink, accountId);
 }
 
+function removePluginFromAllAccounts(pluginUUID) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        return 0;
+    }
+
+    const rows = db.prepare("SELECT id, plugin_access FROM accounts WHERE plugin_access LIKE ?").all(`%${pluginUUID}%`);
+    const updateStmt = db.prepare("UPDATE accounts SET plugin_access = ? WHERE id = ?");
+    let changes = 0;
+
+    rows.forEach((row) => {
+        const current = typeof row.plugin_access === "string" && row.plugin_access.trim()
+            ? row.plugin_access.split(",").map(value => value.trim()).filter(Boolean)
+            : [];
+        const next = current.filter((value) => value !== pluginUUID);
+        const nextValue = next.join(",");
+        if (nextValue !== (row.plugin_access || "")) {
+            updateStmt.run(nextValue, row.id);
+            changes += 1;
+        }
+    });
+
+    return changes;
+}
+
+function deleteAccountById(accountId) {
+    if (!accountId || typeof accountId !== "string") {
+        return 0;
+    }
+    const stmt = db.prepare("DELETE FROM accounts WHERE id = ?");
+    const result = stmt.run(accountId);
+    return result.changes || 0;
+}
+
 function getAccountThatOwnsPlugin(pluginUUID) {
     const stmt = db.prepare("SELECT * FROM accounts WHERE plugin_access LIKE ?");
     const likePattern = `%${pluginUUID}%`;
@@ -333,5 +366,7 @@ export {
     getPluginsAccess,
     setGithubLink,
     setCurseforgeLink,
-    getAccountThatOwnsPlugin
+    getAccountThatOwnsPlugin,
+    removePluginFromAllAccounts,
+    deleteAccountById
 };

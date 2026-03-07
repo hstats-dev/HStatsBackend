@@ -1,6 +1,12 @@
 import betterSQL from "better-sqlite3";
 import { configDotenv } from "dotenv";
-import { PLUGIN_HISTORY_DAYS } from "../config.js";
+import {
+    MAX_PLAYERS_ONLINE_PER_SERVER,
+    PLUGIN_HISTORY_DAYS,
+    PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA,
+    PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA,
+    PLUGIN_HISTORY_SPIKE_MULTIPLIER
+} from "../config.js";
 configDotenv();
 
 /*
@@ -153,6 +159,55 @@ function assertPositiveInt(name, value) {
     }
 }
 
+function toSafeNonNegativeInt(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        return 0;
+    }
+    return Math.floor(numeric);
+}
+
+function smoothHourlySpikeRows(rows) {
+    if (!Array.isArray(rows) || rows.length < 3) {
+        return rows || [];
+    }
+
+    const smoothed = rows.map((row) => ({ ...row }));
+    const source = rows.map((row) => ({
+        servers_count: Math.max(0, Number(row.servers_count) || 0),
+        players_count: Math.max(0, Number(row.players_count) || 0)
+    }));
+
+    const smoothFieldAtIndex = (index, field, minDelta) => {
+        const prev = source[index - 1][field];
+        const curr = source[index][field];
+        const next = source[index + 1][field];
+
+        // Need both neighboring points to form a local "normal" baseline.
+        if (prev <= 0 || next <= 0) {
+            return;
+        }
+
+        const neighborAvg = (prev + next) / 2;
+        const isExtremeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_SPIKE_MULTIPLIER)
+            && curr >= (next * PLUGIN_HISTORY_SPIKE_MULTIPLIER);
+        const isLargeAbsoluteGap = (curr - neighborAvg) >= minDelta;
+
+        if (!isExtremeRelativeToNeighbors || !isLargeAbsoluteGap) {
+            return;
+        }
+
+        smoothed[index][field] = Math.max(0, Math.round(neighborAvg));
+    };
+
+    for (let index = 1; index < rows.length - 1; index += 1) {
+        smoothFieldAtIndex(index, "servers_count", PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA);
+        smoothFieldAtIndex(index, "players_count", PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA);
+    }
+
+    return smoothed;
+}
+
 /*
 Upsert an hourly snapshot for one plugin.
 - pluginUUID: plugin UUID (string).
@@ -241,6 +296,29 @@ function upsertPluginHourlyStats(pluginUUID, serversCount, playersCount, hourSta
     return { plugin_uuid: pluginUUID, hour_start: bucket };
 }
 
+function setPluginHourlyStatsExact(pluginUUID, hourStart, serversCount, playersCount) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        throw new Error("pluginUUID must be a non-empty string");
+    }
+
+    assertPositiveInt("serversCount", serversCount);
+    assertPositiveInt("playersCount", playersCount);
+    const bucket = toUtcHourString(hourStart);
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+        INSERT INTO plugin_stats_hourly (plugin_uuid, hour_start, servers_count, players_count, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(plugin_uuid, hour_start) DO UPDATE SET
+            servers_count = excluded.servers_count,
+            players_count = excluded.players_count,
+            updated_at = excluded.updated_at
+    `).run(pluginUUID, bucket, serversCount, playersCount, now);
+
+    rebuildPluginAllTimePeak(pluginUUID);
+    return { plugin_uuid: pluginUUID, hour_start: bucket };
+}
+
 /*
 Compatibility alias for older call sites.
 */
@@ -267,7 +345,9 @@ function getPluginHourlyStats(pluginUUID, fromHour, toHour) {
         ORDER BY hour_start ASC
     `);
 
-    return stmt.all(pluginUUID, fromStr, toStr).map(row => ({
+    const rows = stmt.all(pluginUUID, fromStr, toStr);
+    const sanitizedRows = smoothHourlySpikeRows(rows);
+    return sanitizedRows.map(row => ({
         day: toUtcHourIsoString(row.hour_start),
         hour_start: toUtcHourIsoString(row.hour_start),
         servers_count: row.servers_count,
@@ -302,7 +382,9 @@ function getPluginHourlyStatsLastDays(pluginUUID, days = PLUGIN_HISTORY_DAYS) {
         ORDER BY hour_start ASC
     `);
 
-    return stmt.all(pluginUUID, `-${days} days`).map(row => ({
+    const rows = stmt.all(pluginUUID, `-${days} days`);
+    const sanitizedRows = smoothHourlySpikeRows(rows);
+    return sanitizedRows.map(row => ({
         day: toUtcHourIsoString(row.hour_start),
         hour_start: toUtcHourIsoString(row.hour_start),
         servers_count: row.servers_count,
@@ -382,6 +464,196 @@ function getPluginAllTimePeak(pluginUUID) {
     };
 }
 
+function setPluginAllTimePeak(pluginUUID, {
+    serversCount,
+    serversAt,
+    playersCount,
+    playersAt
+} = {}) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        throw new Error("pluginUUID must be a non-empty string");
+    }
+
+    const existing = db.prepare(`
+        SELECT
+            peak_servers_count,
+            peak_servers_at,
+            peak_players_count,
+            peak_players_at
+        FROM plugin_all_time_peaks
+        WHERE plugin_uuid = ?
+    `).get(pluginUUID) || {
+        peak_servers_count: 0,
+        peak_servers_at: null,
+        peak_players_count: 0,
+        peak_players_at: null
+    };
+
+    const nextServersCount = serversCount === undefined
+        ? toSafeNonNegativeInt(existing.peak_servers_count)
+        : toSafeNonNegativeInt(serversCount);
+    const nextPlayersCount = playersCount === undefined
+        ? toSafeNonNegativeInt(existing.peak_players_count)
+        : toSafeNonNegativeInt(playersCount);
+
+    const normalizePeakHour = (value, fallback) => {
+        if (value === undefined) {
+            return fallback;
+        }
+        if (value === null || value === "") {
+            return null;
+        }
+        return toUtcHourString(String(value));
+    };
+
+    const nextServersAt = normalizePeakHour(serversAt, existing.peak_servers_at);
+    const nextPlayersAt = normalizePeakHour(playersAt, existing.peak_players_at);
+    const now = Math.floor(Date.now() / 1000);
+
+    db.prepare(`
+        INSERT INTO plugin_all_time_peaks (
+            plugin_uuid,
+            peak_servers_count,
+            peak_servers_at,
+            peak_players_count,
+            peak_players_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(plugin_uuid) DO UPDATE SET
+            peak_servers_count = excluded.peak_servers_count,
+            peak_servers_at = excluded.peak_servers_at,
+            peak_players_count = excluded.peak_players_count,
+            peak_players_at = excluded.peak_players_at,
+            updated_at = excluded.updated_at
+    `).run(pluginUUID, nextServersCount, nextServersAt, nextPlayersCount, nextPlayersAt, now);
+
+    return getPluginAllTimePeak(pluginUUID);
+}
+
+function rebuildPluginAllTimePeak(pluginUUID) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        throw new Error("pluginUUID must be a non-empty string");
+    }
+
+    const topServers = db.prepare(`
+        SELECT servers_count, hour_start
+        FROM plugin_stats_hourly
+        WHERE plugin_uuid = ?
+        ORDER BY servers_count DESC, hour_start ASC
+        LIMIT 1
+    `).get(pluginUUID);
+
+    const topPlayers = db.prepare(`
+        SELECT players_count, hour_start
+        FROM plugin_stats_hourly
+        WHERE plugin_uuid = ?
+        ORDER BY players_count DESC, hour_start ASC
+        LIMIT 1
+    `).get(pluginUUID);
+
+    const now = Math.floor(Date.now() / 1000);
+    const peakServersCount = toSafeNonNegativeInt(topServers?.servers_count || 0);
+    const peakServersAt = topServers?.hour_start || null;
+    const peakPlayersCount = toSafeNonNegativeInt(topPlayers?.players_count || 0);
+    const peakPlayersAt = topPlayers?.hour_start || null;
+
+    db.prepare(`
+        INSERT INTO plugin_all_time_peaks (
+            plugin_uuid,
+            peak_servers_count,
+            peak_servers_at,
+            peak_players_count,
+            peak_players_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(plugin_uuid) DO UPDATE SET
+            peak_servers_count = excluded.peak_servers_count,
+            peak_servers_at = excluded.peak_servers_at,
+            peak_players_count = excluded.peak_players_count,
+            peak_players_at = excluded.peak_players_at,
+            updated_at = excluded.updated_at
+    `).run(pluginUUID, peakServersCount, peakServersAt, peakPlayersCount, peakPlayersAt, now);
+
+    return getPluginAllTimePeak(pluginUUID);
+}
+
+function repairPluginHistory(pluginUUID = null) {
+    const pluginIds = pluginUUID
+        ? [pluginUUID]
+        : db.prepare("SELECT DISTINCT plugin_uuid FROM plugin_stats_hourly").all().map((row) => row.plugin_uuid);
+
+    const updateStmt = db.prepare(`
+        UPDATE plugin_stats_hourly
+        SET servers_count = ?, players_count = ?, updated_at = ?
+        WHERE plugin_uuid = ? AND hour_start = ?
+    `);
+
+    const now = Math.floor(Date.now() / 1000);
+    let totalRowsUpdated = 0;
+    let pluginsTouched = 0;
+
+    pluginIds.forEach((id) => {
+        const rows = db.prepare(`
+            SELECT plugin_uuid, hour_start, servers_count, players_count
+            FROM plugin_stats_hourly
+            WHERE plugin_uuid = ?
+            ORDER BY hour_start ASC
+        `).all(id);
+
+        if (rows.length === 0) {
+            return;
+        }
+
+        const smoothed = smoothHourlySpikeRows(rows);
+        let pluginChanged = false;
+
+        for (let index = 0; index < rows.length; index += 1) {
+            const before = rows[index];
+            const candidate = smoothed[index];
+
+            const nextServers = toSafeNonNegativeInt(candidate.servers_count);
+            let nextPlayers = toSafeNonNegativeInt(candidate.players_count);
+            const hardMaxPlayers = nextServers * MAX_PLAYERS_ONLINE_PER_SERVER;
+            if (nextPlayers > hardMaxPlayers) {
+                nextPlayers = hardMaxPlayers;
+            }
+
+            const beforeServers = toSafeNonNegativeInt(before.servers_count);
+            const beforePlayers = toSafeNonNegativeInt(before.players_count);
+            if (nextServers !== beforeServers || nextPlayers !== beforePlayers) {
+                updateStmt.run(nextServers, nextPlayers, now, id, before.hour_start);
+                totalRowsUpdated += 1;
+                pluginChanged = true;
+            }
+        }
+
+        rebuildPluginAllTimePeak(id);
+        if (pluginChanged) {
+            pluginsTouched += 1;
+        }
+    });
+
+    return {
+        plugins_scanned: pluginIds.length,
+        plugins_touched: pluginsTouched,
+        rows_updated: totalRowsUpdated
+    };
+}
+
+function deletePluginStats(pluginUUID) {
+    if (!pluginUUID || typeof pluginUUID !== "string") {
+        throw new Error("pluginUUID must be a non-empty string");
+    }
+    const hourlyDeleted = db.prepare("DELETE FROM plugin_stats_hourly WHERE plugin_uuid = ?").run(pluginUUID).changes || 0;
+    const peaksDeleted = db.prepare("DELETE FROM plugin_all_time_peaks WHERE plugin_uuid = ?").run(pluginUUID).changes || 0;
+    return {
+        hourly_deleted: hourlyDeleted,
+        peaks_deleted: peaksDeleted
+    };
+}
+
 /*
 Compatibility alias for older call sites.
 */
@@ -416,11 +688,16 @@ function prunePluginDailyStats(daysToKeep = PLUGIN_HISTORY_DAYS) {
 
 export {
     upsertPluginHourlyStats,
+    setPluginHourlyStatsExact,
     upsertPluginDailyStats,
     getPluginHourlyStats,
     getPluginDailyStats,
     getPluginHourlyStatsLastDays,
     getPluginAllTimePeak,
+    setPluginAllTimePeak,
+    rebuildPluginAllTimePeak,
+    repairPluginHistory,
+    deletePluginStats,
     getPluginDailyStatsLastDays,
     prunePluginHourlyStats,
     prunePluginDailyStats
