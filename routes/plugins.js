@@ -37,6 +37,27 @@ function getLatestPluginVersionForServer(pluginsValue, pluginUUID) {
     return latestVersion;
 }
 
+function getUniquePluginUUIDsForServer(pluginsValue) {
+    if (typeof pluginsValue !== "string" || !pluginsValue.trim()) {
+        return [];
+    }
+
+    const uniquePluginUUIDs = new Set();
+    pluginsValue.split(",").forEach((entryRaw) => {
+        const entry = String(entryRaw || "").trim();
+        if (!entry) {
+            return;
+        }
+        const [entryPluginUUID] = entry.split("@");
+        const normalizedUUID = (entryPluginUUID || "").trim();
+        if (normalizedUUID) {
+            uniquePluginUUIDs.add(normalizedUUID);
+        }
+    });
+
+    return Array.from(uniquePluginUUIDs);
+}
+
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
@@ -186,6 +207,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
     let osNames = {};
     let osVersions = {};
     let coreCounts = {};
+    let coPluginCounts = {};
 
     servers.forEach(server => {
         totalPlayers += server.players_online;
@@ -226,7 +248,36 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
             }
             coreCounts[server.core_count]++;
         }
+
+        const serverPluginUUIDs = getUniquePluginUUIDsForServer(server.plugins);
+        serverPluginUUIDs.forEach((pluginUUID) => {
+            if (pluginUUID === req.params.plugin_uuid) {
+                return;
+            }
+
+            if (!(pluginUUID in coPluginCounts)) {
+                coPluginCounts[pluginUUID] = 0;
+            }
+            coPluginCounts[pluginUUID]++;
+        });
     });
+
+    const coPlugins = Object.entries(coPluginCounts)
+        .sort((a, b) => {
+            if (b[1] !== a[1]) {
+                return b[1] - a[1];
+            }
+            return a[0].localeCompare(b[0]);
+        })
+        .slice(0, 10)
+        .map(([pluginUUID, timesSeen]) => {
+            const coPlugin = getPlugin(pluginUUID);
+            return {
+                name: coPlugin?.name || "Unknown Plugin",
+                uuid: pluginUUID,
+                times_seen: timesSeen
+            };
+        });
 
     res.status(200).json({
         name: plugin.name,
@@ -235,6 +286,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
         history: getPluginDailyStatsLastDays(req.params.plugin_uuid),
         all_time_peak: getPluginAllTimePeak(req.params.plugin_uuid),
         versions: versions,
+        co_plugins: coPlugins,
         countries: countries,
         java_versions: javaVersions,
         os_names: osNames,
