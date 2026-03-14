@@ -1,13 +1,18 @@
 import express from "express";
 import crypto from "crypto";
+import BadWordsNext from "bad-words-next";
+import en from "bad-words-next/lib/en";
 import {
     createAccount,
     createDiscordAccount,
+    getAccountById,
     getAccountByDiscordId,
     getAccountByEmail,
     getAccountThatOwnsPlugin,
+    getPluginsAccess,
     getSessionMaxAgeMs,
     linkDiscordToAccount,
+    setAccountUsername,
     setCurseforgeLink,
     setGithubLink,
     syncEmailIfMissing,
@@ -17,8 +22,10 @@ import {
     updatePassword,
     verifyPassword
 } from "../databases/accountsdb.js";
+import { getPlugin, getPluginByPublicUUID, toPublicPlugin } from "../databases/plugindb.js";
+import { getServersUsingPlugin } from "../databases/serversdb.js";
 import requireSession from "../middleware/requireSession.js";
-import { authRateLimiter } from "../middleware/rateLimiters.js";
+import { authRateLimiter, publicGetRateLimiter } from "../middleware/rateLimiters.js";
 import { EMAIL_MAX_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../config.js";
 
 const router = express.Router();
@@ -29,6 +36,9 @@ const DISCORD_OAUTH_USER_URL = "https://discord.com/api/users/@me";
 const DISCORD_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const FRONTEND_ORIGIN = process.env.DISCORD_OAUTH_FRONTEND_ORIGIN
     || (process.env.PRODUCTION === "true" ? "https://hstats.dev" : "http://localhost:5173");
+const USERNAME_MIN_LENGTH = 3;
+const USERNAME_MAX_LENGTH = 24;
+const usernameBadWords = new BadWordsNext({ data: en });
 
 function validateEmail(email) {
     return typeof email === "string" && email.includes("@") && email.length <= EMAIL_MAX_LENGTH;
@@ -36,6 +46,115 @@ function validateEmail(email) {
 
 function validatePassword(password) {
     return typeof password === "string" && password.length >= PASSWORD_MIN_LENGTH && password.length <= PASSWORD_MAX_LENGTH;
+}
+
+function validateUsername(username) {
+    if (typeof username !== "string") {
+        return { ok: false, error: "Username must be a string" };
+    }
+
+    const trimmed = username.trim();
+    if (!trimmed) {
+        return { ok: true, username: "" };
+    }
+
+    if (trimmed.length < USERNAME_MIN_LENGTH || trimmed.length > USERNAME_MAX_LENGTH) {
+        return { ok: false, error: `Username must be ${USERNAME_MIN_LENGTH}-${USERNAME_MAX_LENGTH} characters` };
+    }
+
+    if (!/^[A-Za-z0-9][A-Za-z0-9._ -]*[A-Za-z0-9]$/.test(trimmed)) {
+        return { ok: false, error: "Username must start/end with letters or numbers and only use letters, numbers, space, dot, underscore, or hyphen" };
+    }
+
+    if (/\s{2,}/.test(trimmed) || /[._-]{2,}/.test(trimmed)) {
+        return { ok: false, error: "Username cannot contain repeated separators" };
+    }
+
+    if (usernameBadWords.check(trimmed)) {
+        return { ok: false, error: "Username contains inappropriate language" };
+    }
+
+    return { ok: true, username: trimmed };
+}
+
+function isCanonicalUuid(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
+
+function getManagedPluginSummaries(accountId) {
+    const pluginIds = getPluginsAccess(accountId)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+    const uniquePluginIds = Array.from(new Set(pluginIds));
+
+    const summaries = uniquePluginIds.map((pluginUUID) => {
+        const plugin = getPlugin(pluginUUID);
+        if (!plugin) {
+            return null;
+        }
+        const publicPlugin = toPublicPlugin(plugin);
+        const serversUsing = getServersUsingPlugin(pluginUUID);
+        const totalPlayers = serversUsing.reduce((sum, server) => sum + (Number(server.players_online) || 0), 0);
+
+        return {
+            uuid: publicPlugin.uuid,
+            name: plugin.name || "Unknown Plugin",
+            added_on: plugin.added_on || null,
+            links: {
+                github_link: plugin.github_link || "",
+                curseforge_link: plugin.curseforge_link || ""
+            },
+            servers_using: serversUsing.length,
+            total_players: totalPlayers
+        };
+    }).filter(Boolean);
+
+    summaries.sort((a, b) => {
+        if (b.servers_using !== a.servers_using) {
+            return b.servers_using - a.servers_using;
+        }
+        if (b.total_players !== a.total_players) {
+            return b.total_players - a.total_players;
+        }
+        return String(a.uuid || "").localeCompare(String(b.uuid || ""));
+    });
+
+    return summaries;
+}
+
+function getPluginAccessView(accountId) {
+    const privatePluginAccess = getPluginsAccess(accountId)
+        .map((value) => String(value || "").trim())
+        .filter(Boolean);
+    const uniquePrivatePluginAccess = Array.from(new Set(privatePluginAccess));
+    const publicPluginAccess = uniquePrivatePluginAccess
+        .map((privateUuid) => {
+            const plugin = getPlugin(privateUuid);
+            if (!plugin) {
+                return null;
+            }
+            return toPublicPlugin(plugin).uuid;
+        })
+        .filter(Boolean);
+
+    return {
+        plugin_access: publicPluginAccess,
+        private_plugin_access: uniquePrivatePluginAccess
+    };
+}
+
+function toFrontendSafeAccount(accountRow) {
+    const safe = toSafeAccount(accountRow);
+    if (!safe) {
+        return null;
+    }
+    return {
+        ...safe,
+        ...getPluginAccessView(accountRow.id)
+    };
 }
 
 function getDiscordRedirectUri(req) {
@@ -257,7 +376,7 @@ router.post("/register", authRateLimiter, async (req, res) => {
     req.session.accountId = result.id;
     req.session.cookie.maxAge = getSessionMaxAgeMs();
     touchLastLogin(result.id);
-    res.status(201).json({ account: toSafeAccount(result) });
+    res.status(201).json({ account: toFrontendSafeAccount(result) });
 });
 
 router.post("/login", authRateLimiter, (req, res) => {
@@ -280,7 +399,7 @@ router.post("/login", authRateLimiter, (req, res) => {
     req.session.accountId = account.id;
     req.session.cookie.maxAge = getSessionMaxAgeMs();
     touchLastLogin(account.id);
-    res.json({ account: toSafeAccount(account) });
+    res.json({ account: toFrontendSafeAccount(account) });
 });
 
 router.get("/oauth/discord/start", authRateLimiter, (req, res) => {
@@ -399,20 +518,72 @@ router.post("/apply-curseforge-link", requireSession, (req, res) => {
     res.json({ status: "success" });
 });
 
-router.get("/get-plugin-ownership/:plugin_uuid", (req, res) => {
+router.post("/apply-username", requireSession, (req, res) => {
+    const { username } = req.body || {};
+    const validation = validateUsername(username);
+    if (!validation.ok) {
+        return res.status(400).json({ error: validation.error });
+    }
+
+    const result = setAccountUsername(req.account.id, validation.username);
+    if (!result.ok) {
+        return res.status(409).json({ error: result.error || "Username already taken" });
+    }
+
+    const updated = getAccountById(req.account.id);
+    return res.json({
+        status: "success",
+        username: updated?.username || ""
+    });
+});
+
+router.get("/get-plugin-ownership/:plugin_uuid", publicGetRateLimiter, (req, res) => {
     const { plugin_uuid } = req.params || {};
-    if (typeof plugin_uuid !== "string") {
+    if (!isCanonicalUuid(plugin_uuid)) {
         return res.status(400).json({ error: "Invalid plugin UUID" });
     }
-    const account = getAccountThatOwnsPlugin(plugin_uuid);
+
+    const plugin = getPluginByPublicUUID(plugin_uuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const account = getAccountThatOwnsPlugin(plugin.uuid);
     if (!account) {
         return res.status(404).json({ error: "No account owns this plugin" });
     }
     res.json({ account: toPublicAccount(account) });
 });
 
+router.get("/developer/:developer_uuid", publicGetRateLimiter, (req, res) => {
+    const developerUUID = typeof req.params?.developer_uuid === "string"
+        ? req.params.developer_uuid.trim()
+        : "";
+    if (!isCanonicalUuid(developerUUID)) {
+        return res.status(400).json({ error: "Invalid developer UUID" });
+    }
+
+    const account = getAccountById(developerUUID);
+    if (!account || account.is_disabled) {
+        return res.status(404).json({ error: "Developer not found" });
+    }
+
+    const modsManaged = getManagedPluginSummaries(account.id);
+    return res.status(200).json({
+        developer: {
+            id: account.id,
+            username: account.username?.trim() || "No Name",
+            discord_username: account.discord_username || "",
+            github_link: account.github_link || "",
+            curseforge_link: account.curseforge_link || "",
+            mods_managed_count: modsManaged.length,
+            mods_managed: modsManaged
+        }
+    });
+});
+
 router.get("/me", requireSession, (req, res) => {
-    res.json({ account: toSafeAccount(req.account) });
+    res.json({ account: toFrontendSafeAccount(req.account) });
 });
 
 router.post("/logout", requireSession, (req, res) => {

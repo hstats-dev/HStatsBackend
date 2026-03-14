@@ -1,6 +1,6 @@
 import { EmbedBuilder, MessageFlags, SlashCommandBuilder } from "discord.js";
 import { getAccountThatOwnsPlugin } from "../../../databases/accountsdb.js";
-import { getPlugin } from "../../../databases/plugindb.js";
+import { getPluginByPublicUUID, toPublicPlugin } from "../../../databases/plugindb.js";
 import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from "../../../databases/pluginstatsdb.js";
 import { getServersUsingPlugin } from "../../../databases/serversdb.js";
 
@@ -90,7 +90,7 @@ export default {
             return;
         }
 
-        const plugin = getPlugin(pluginUUID);
+        const plugin = getPluginByPublicUUID(pluginUUID);
         if (!plugin) {
             await interaction.reply({
                 content: "Plugin not found.",
@@ -98,19 +98,21 @@ export default {
             });
             return;
         }
+        const privatePluginUUID = plugin.uuid;
+        const publicPlugin = toPublicPlugin(plugin);
 
-        const servers = getServersUsingPlugin(pluginUUID);
+        const servers = getServersUsingPlugin(privatePluginUUID);
         const totalPlayers = servers.reduce((sum, server) => sum + (Number(server.players_online) || 0), 0);
-        const peak = getPluginAllTimePeak(pluginUUID);
-        const history = getPluginDailyStatsLastDays(pluginUUID, 2);
-        const versions = parseVersions(servers, pluginUUID);
+        const peak = getPluginAllTimePeak(privatePluginUUID);
+        const history = getPluginDailyStatsLastDays(privatePluginUUID, 2);
+        const versions = parseVersions(servers, privatePluginUUID);
         const topVersions = Object.entries(versions)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 5)
             .map(([version, count]) => `${version}: ${formatNumber(count)}`)
             .join("\n") || "No version data";
 
-        const owner = getAccountThatOwnsPlugin(pluginUUID);
+        const owner = getAccountThatOwnsPlugin(privatePluginUUID);
         const ownerLinks = [
             owner?.github_link ? `[GitHub](${owner.github_link})` : null,
             owner?.curseforge_link ? `[CurseForge](${owner.curseforge_link})` : null
@@ -119,7 +121,7 @@ export default {
         const embed = new EmbedBuilder()
             .setColor(0x1f2937)
             .setTitle(plugin.name || "Unknown Plugin")
-            .setDescription(`UUID: \`${pluginUUID}\``)
+            .setDescription(`UUID: \`${publicPlugin.uuid}\``)
             .addFields(
                 { name: "Live Servers", value: formatNumber(servers.length), inline: true },
                 { name: "Live Players", value: formatNumber(totalPlayers), inline: true },
@@ -135,7 +137,7 @@ export default {
                 { name: "48h Trend", value: formatTrend(history), inline: false },
                 { name: "Developer", value: ownerLinks, inline: false }
             )
-            .setFooter({ text: "hstats.dev • Plugin Stats" })
+            .setFooter({ text: "hstats.dev - Plugin Stats" })
             .setTimestamp(new Date());
 
         await interaction.reply({ embeds: [embed] });

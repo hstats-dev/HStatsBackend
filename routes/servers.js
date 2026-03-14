@@ -87,13 +87,11 @@ router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter
         player_count: playersOnline,
         server_uuid: req.body.server_uuid.substring(0, 6)
     });
-    res.status(204).json({ status: "success" });
+    res.sendStatus(204);
 });
 
 // Endpoint sent by the server to add a plugin to its list
 router.post("/add-plugin", serverIngestIpRateLimiter, serverIngestRateLimiter, (req, res) => {
-    console.log(JSON.stringify(req.body));
-
     if (!req.body.server_uuid || !isCanonicalUuid(req.body.server_uuid))
         return res.status(400).json({ error: "server_uuid must be a valid UUID" });
     const pluginUuid = stripPluginEntryDelimiters(req.body.plugin_uuid);

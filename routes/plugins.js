@@ -1,14 +1,24 @@
 import express from 'express';
-import {v4 as uuidv4} from 'uuid';
+import crypto from 'crypto';
 import BadWordsNext from 'bad-words-next';
 import en from 'bad-words-next/lib/en';
 import { getServersUsingPlugin } from '../databases/serversdb.js';
-import { addOrUpdatePlugin, deletePlugin, getAllPlugins, getPlugin } from '../databases/plugindb.js';
+import {
+    addOrUpdatePlugin,
+    deletePlugin,
+    getAllPlugins,
+    getPlugin,
+    getPluginByAnyUUID,
+    getPluginByPublicUUID,
+    setPluginLinks,
+    toPublicPlugin
+} from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
 import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { MAX_PLUGINS_PER_USER } from '../config.js';
+import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
@@ -58,6 +68,42 @@ function getUniquePluginUUIDsForServer(pluginsValue) {
     return Array.from(uniquePluginUUIDs);
 }
 
+function validateOptionalPluginLink(value, kind) {
+    if (value === undefined) {
+        return { ok: true, value: undefined };
+    }
+    if (typeof value !== "string") {
+        return { ok: false, error: `Invalid ${kind} link` };
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return { ok: true, value: "" };
+    }
+
+    if (kind === "github" && !trimmed.startsWith("https://github.com/")) {
+        return { ok: false, error: "Invalid GitHub link" };
+    }
+    if (kind === "curseforge") {
+        let parsedUrl = null;
+        try {
+            parsedUrl = new URL(trimmed);
+        } catch (error) {
+            return { ok: false, error: "Invalid CurseForge link" };
+        }
+
+        const host = parsedUrl.hostname.toLowerCase();
+        const pathname = parsedUrl.pathname;
+        const isAllowedHost = host === "www.curseforge.com" || host === "curseforge.com";
+        const hasValidPathPrefix = /^\/hytale\/mods\/[^/]+/i.test(pathname);
+        if (!isAllowedHost || !hasValidPathPrefix) {
+            return { ok: false, error: "Invalid CurseForge mod link. Expected https://www.curseforge.com/hytale/mods/<mod-name>" };
+        }
+    }
+
+    return { ok: true, value: trimmed };
+}
+
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
@@ -93,17 +139,25 @@ router.post("/add-plugin", requireSession, (req, res) => {
         });
     }
 
-    let pluginUUID = uuidv4();
-    while (getPlugin(pluginUUID) !== undefined) {
-        pluginUUID = uuidv4();
+    let privatePluginUUID = crypto.randomUUID();
+    while (getPlugin(privatePluginUUID) !== undefined) {
+        privatePluginUUID = crypto.randomUUID();
     }
 
-    addOrUpdatePlugin(pluginUUID, pluginName);
-    addPluginToUser(req.account.id, pluginUUID);
+    addOrUpdatePlugin(privatePluginUUID, pluginName);
+    const createdPlugin = getPlugin(privatePluginUUID);
+    const publicPlugin = toPublicPlugin(createdPlugin, { includePrivate: true });
+    if (!publicPlugin) {
+        return res.status(500).json({ error: "Failed to create plugin" });
+    }
+    addPluginToUser(req.account.id, privatePluginUUID);
     addToRecentActivity(MessageType.MOD_REGISTERED, {
         mod_name: pluginName,
     });
-    res.status(201).json({ plugin_uuid: pluginUUID });
+    res.status(201).json({
+        plugin_uuid: publicPlugin.uuid,
+        private_plugin_uuid: publicPlugin.private_uuid
+    });
 });
 
 router.post("/delete-plugin", requireSession, (req, res) => {
@@ -113,22 +167,70 @@ router.post("/delete-plugin", requireSession, (req, res) => {
         return res.status(400).json({ error: "Missing uuid field" });
     }
 
-    const plugin = getPlugin(uuid);
+    const plugin = getPluginByAnyUUID(uuid);
     if (!plugin) {
         return res.status(404).json({ error: "Plugin not found" });
     }
 
     const account = req.account;
     const pluginAccess = getPluginsAccess(account.id);
-    if (!pluginAccess.includes(uuid)) {
+    if (!pluginAccess.includes(plugin.uuid)) {
         return res.status(403).json({ error: "Cannot delete a plugin you do not have access to" });
     }
 
-    deletePlugin(uuid);
+    deletePlugin(plugin.uuid);
     res.status(200).json({ message: "Plugin deleted successfully" });
 });
 
-router.get("/list-plugins", (req, res) => {
+router.post("/apply-plugin-links", requireSession, (req, res) => {
+    const inputUuid = typeof req.body?.plugin_uuid === "string" ? req.body.plugin_uuid.trim() : "";
+    if (!inputUuid) {
+        return res.status(400).json({ error: "Missing plugin_uuid field" });
+    }
+
+    const plugin = getPluginByAnyUUID(inputUuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const pluginAccess = getPluginsAccess(req.account.id);
+    if (!pluginAccess.includes(plugin.uuid)) {
+        return res.status(403).json({ error: "Cannot edit links for a plugin you do not have access to" });
+    }
+
+    const githubResult = validateOptionalPluginLink(req.body?.github_link, "github");
+    if (!githubResult.ok) {
+        return res.status(400).json({ error: githubResult.error });
+    }
+    const curseforgeResult = validateOptionalPluginLink(req.body?.curseforge_link, "curseforge");
+    if (!curseforgeResult.ok) {
+        return res.status(400).json({ error: curseforgeResult.error });
+    }
+
+    if (githubResult.value === undefined && curseforgeResult.value === undefined) {
+        return res.status(400).json({ error: "Provide at least one of github_link or curseforge_link" });
+    }
+
+    const updatedPlugin = setPluginLinks(plugin.uuid, {
+        githubLink: githubResult.value,
+        curseforgeLink: curseforgeResult.value
+    });
+    if (!updatedPlugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const publicPlugin = toPublicPlugin(updatedPlugin);
+    return res.json({
+        status: "success",
+        plugin_uuid: publicPlugin.uuid,
+        links: {
+            github_link: publicPlugin.github_link || "",
+            curseforge_link: publicPlugin.curseforge_link || ""
+        }
+    });
+});
+
+router.get("/list-plugins", heavyGetRateLimiter, (req, res) => {
     const searchTerm = typeof req.query.search === "string" ? req.query.search : "";
     const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 50, 50));
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -167,8 +269,9 @@ router.get("/list-plugins", (req, res) => {
 
     const response = {};
     pageRows.forEach(({ plugin, serversUsingCount, totalPlayers }) => {
-        response[plugin.uuid] = {
-            plugin_info: plugin,
+        const publicPlugin = toPublicPlugin(plugin);
+        response[publicPlugin.uuid] = {
+            plugin_info: publicPlugin,
             servers_using: serversUsingCount,
             total_players: totalPlayers,
             daily_stats: getPluginDailyStatsLastDays(plugin.uuid),
@@ -176,6 +279,7 @@ router.get("/list-plugins", (req, res) => {
                 const account = getAccountThatOwnsPlugin(plugin.uuid);
                 if (account) {
                     return {
+                        username: account.username?.trim() || "No Name",
                         github_link: account.github_link || "",
                         curseforge_link: account.curseforge_link || ""
                     };
@@ -189,15 +293,17 @@ router.get("/list-plugins", (req, res) => {
     res.status(200).json({ plugins: response });
 });
 
-router.get("/plugin-info/:plugin_uuid", (req, res) => {
+router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
     if (!req.params.plugin_uuid)
         return res.status(400).json({ error: "Missing plugin_uuid parameter" });
 
-    const plugin = getPlugin(req.params.plugin_uuid);
+    const plugin = getPluginByPublicUUID(req.params.plugin_uuid);
     if (!plugin) {
         return res.status(404).json({ error: "Plugin not found" });
     }
-    const servers = getServersUsingPlugin(req.params.plugin_uuid);
+    const privatePluginUUID = plugin.uuid;
+    const publicPlugin = toPublicPlugin(plugin);
+    const servers = getServersUsingPlugin(privatePluginUUID);
 
     let totalServers = servers.length;
     let totalPlayers = 0;
@@ -211,7 +317,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
 
     servers.forEach(server => {
         totalPlayers += server.players_online;
-        const version = getLatestPluginVersionForServer(server.plugins, req.params.plugin_uuid);
+        const version = getLatestPluginVersionForServer(server.plugins, privatePluginUUID);
         if (version) {
             if (!(version in versions)) {
                 versions[version] = 0;
@@ -251,7 +357,7 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
 
         const serverPluginUUIDs = getUniquePluginUUIDsForServer(server.plugins);
         serverPluginUUIDs.forEach((pluginUUID) => {
-            if (pluginUUID === req.params.plugin_uuid) {
+            if (pluginUUID === privatePluginUUID) {
                 return;
             }
 
@@ -269,22 +375,32 @@ router.get("/plugin-info/:plugin_uuid", (req, res) => {
             }
             return a[0].localeCompare(b[0]);
         })
-        .slice(0, 10)
+        .slice(0, 50)
         .map(([pluginUUID, timesSeen]) => {
             const coPlugin = getPlugin(pluginUUID);
+            if (!coPlugin) {
+                return null;
+            }
+            const publicCoPlugin = toPublicPlugin(coPlugin);
             return {
                 name: coPlugin?.name || "Unknown Plugin",
-                uuid: pluginUUID,
+                uuid: publicCoPlugin.uuid,
                 times_seen: timesSeen
             };
-        });
+        })
+        .filter(Boolean);
 
     res.status(200).json({
+        uuid: publicPlugin.uuid,
         name: plugin.name,
+        links: {
+            github_link: publicPlugin.github_link || "",
+            curseforge_link: publicPlugin.curseforge_link || ""
+        },
         total_servers: totalServers,
         total_players: totalPlayers,
-        history: getPluginDailyStatsLastDays(req.params.plugin_uuid),
-        all_time_peak: getPluginAllTimePeak(req.params.plugin_uuid),
+        history: getPluginDailyStatsLastDays(privatePluginUUID),
+        all_time_peak: getPluginAllTimePeak(privatePluginUUID),
         versions: versions,
         co_plugins: coPlugins,
         countries: countries,

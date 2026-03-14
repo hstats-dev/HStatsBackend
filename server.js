@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ActivityType, Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { heavyGetRateLimiter, publicGetRateLimiter } from "./middleware/rateLimiters.js";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once(Events.ClientReady, (readyClient) => {
@@ -147,7 +148,7 @@ app.use("/api/server", serverRoutes);
 app.use("/api/embed", embedRoutes);
 
 // Endpoint to get current server online server data
-app.get("/api/server-data", (req, res) => {
+app.get("/api/server-data", publicGetRateLimiter, (req, res) => {
     res.status(200).json({
         online_players: onlinePlayers,
         online_servers: onlineServers,
@@ -161,12 +162,12 @@ app.get("/api/server-data", (req, res) => {
     });
 });
 
-app.get("/api/recent-activity", (req, res) => {
+app.get("/api/recent-activity", publicGetRateLimiter, (req, res) => {
     const recentActivity = getRecentActivity();
     res.status(200).json({ recentActivity });
 });
 
-app.get("/api/server-history", (req, res) => {
+app.get("/api/server-history", heavyGetRateLimiter, (req, res) => {
     try {
         const all = typeof req.query.all === "string" && ["1", "true", "yes", "on"].includes(req.query.all.toLowerCase());
         const from = typeof req.query.from === "string" ? req.query.from : null;

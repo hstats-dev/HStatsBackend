@@ -12,6 +12,18 @@ export const MAX_PLUGINS_PER_USER = 10; // how many plugins can a user have acce
 export const AUTH_RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 export const AUTH_RATE_LIMIT_MAX = 10;
 
+// Public GET Rate Limiting
+export const PUBLIC_GET_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+export const PUBLIC_GET_RATE_LIMIT_MAX = 120;
+
+// Heavy GET Rate Limiting
+export const HEAVY_GET_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+export const HEAVY_GET_RATE_LIMIT_MAX = 45;
+
+// Embed GET Rate Limiting
+export const EMBED_GET_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+export const EMBED_GET_RATE_LIMIT_MAX = 240;
+
 // Server Ingest Rate Limiting
 export const SERVER_INGEST_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 export const SERVER_INGEST_RATE_LIMIT_MAX = 300;

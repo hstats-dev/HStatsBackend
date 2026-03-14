@@ -2,6 +2,12 @@ import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 import {
     AUTH_RATE_LIMIT_MAX,
     AUTH_RATE_LIMIT_WINDOW_MS,
+    EMBED_GET_RATE_LIMIT_MAX,
+    EMBED_GET_RATE_LIMIT_WINDOW_MS,
+    HEAVY_GET_RATE_LIMIT_MAX,
+    HEAVY_GET_RATE_LIMIT_WINDOW_MS,
+    PUBLIC_GET_RATE_LIMIT_MAX,
+    PUBLIC_GET_RATE_LIMIT_WINDOW_MS,
     SERVER_INGEST_IP_RATE_LIMIT_MAX,
     SERVER_INGEST_RATE_LIMIT_MAX,
     SERVER_INGEST_RATE_LIMIT_WINDOW_MS
@@ -46,6 +52,27 @@ const authRateLimiter = createJsonRateLimit({
     message: "Too many authentication attempts. Try again later."
 });
 
+const publicGetRateLimiter = createJsonRateLimit({
+    windowMs: parsePositiveIntEnv("PUBLIC_GET_RATE_LIMIT_WINDOW_MS", PUBLIC_GET_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("PUBLIC_GET_RATE_LIMIT_MAX", PUBLIC_GET_RATE_LIMIT_MAX),
+    message: "Too many requests. Try again later.",
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip || "")}`
+});
+
+const heavyGetRateLimiter = createJsonRateLimit({
+    windowMs: parsePositiveIntEnv("HEAVY_GET_RATE_LIMIT_WINDOW_MS", HEAVY_GET_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("HEAVY_GET_RATE_LIMIT_MAX", HEAVY_GET_RATE_LIMIT_MAX),
+    message: "Too many heavy requests. Try again later.",
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip || "")}`
+});
+
+const embedGetRateLimiter = createJsonRateLimit({
+    windowMs: parsePositiveIntEnv("EMBED_GET_RATE_LIMIT_WINDOW_MS", EMBED_GET_RATE_LIMIT_WINDOW_MS),
+    max: parsePositiveIntEnv("EMBED_GET_RATE_LIMIT_MAX", EMBED_GET_RATE_LIMIT_MAX),
+    message: "Too many embed requests. Try again later.",
+    keyGenerator: (req) => `ip:${ipKeyGenerator(req.ip || "")}`
+});
+
 const serverIngestRateLimiter = createJsonRateLimit({
     windowMs: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_WINDOW_MS", SERVER_INGEST_RATE_LIMIT_WINDOW_MS),
     max: parsePositiveIntEnv("SERVER_INGEST_RATE_LIMIT_MAX", SERVER_INGEST_RATE_LIMIT_MAX),
@@ -70,6 +97,9 @@ const serverIngestIpRateLimiter = createJsonRateLimit({
 
 export {
     authRateLimiter,
+    publicGetRateLimiter,
+    heavyGetRateLimiter,
+    embedGetRateLimiter,
     serverIngestRateLimiter,
     serverIngestIpRateLimiter
 };

@@ -2,9 +2,10 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { getPlugin } from "../databases/plugindb.js";
+import { getPluginByPublicUUID } from "../databases/plugindb.js";
 import { getServersUsingPlugin } from "../databases/serversdb.js";
 import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from "../databases/pluginstatsdb.js";
+import { embedGetRateLimiter } from "../middleware/rateLimiters.js";
 
 const router = express.Router();
 const TARGET_URL = "https://hstats.dev";
@@ -531,7 +532,7 @@ function renderCardSvg(data, options) {
 </svg>`;
 }
 
-router.get("/:mod/card.svg", (req, res) => {
+router.get("/:mod/card.svg", embedGetRateLimiter, (req, res) => {
     const { mod } = req.params || {};
     if (typeof mod !== "string" || !mod.trim()) {
         return res.status(400).json({ error: "Invalid mod identifier" });
@@ -549,8 +550,12 @@ router.get("/:mod/card.svg", (req, res) => {
         return;
     }
 
-    const plugin = getPlugin(modId);
-    const servers = getServersUsingPlugin(modId);
+    const plugin = getPluginByPublicUUID(modId);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+    const privatePluginUUID = plugin.uuid;
+    const servers = getServersUsingPlugin(privatePluginUUID);
 
     let playerCount = 0;
     servers.forEach((server) => {
@@ -558,8 +563,8 @@ router.get("/:mod/card.svg", (req, res) => {
         playerCount += players;
     });
 
-    const rawHistoryRows = getPluginDailyStatsLastDays(modId);
-    const allTimePeak = getPluginAllTimePeak(modId);
+    const rawHistoryRows = getPluginDailyStatsLastDays(privatePluginUUID);
+    const allTimePeak = getPluginAllTimePeak(privatePluginUUID);
     const history = Array.isArray(rawHistoryRows)
         ? rawHistoryRows
             .map((row) => ({

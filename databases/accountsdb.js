@@ -13,6 +13,7 @@ db.exec(`
         email_hash TEXT UNIQUE,
         password_hash TEXT,
         password_salt TEXT,
+        username TEXT DEFAULT '',
         discord_id TEXT,
         discord_username TEXT DEFAULT '',
         plugin_access TEXT DEFAULT '',
@@ -35,9 +36,11 @@ function ensureColumn(table, column, definition) {
 ensureColumn("accounts", "plugin_access", "TEXT DEFAULT ''");
 ensureColumn("accounts", "github_link", "TEXT");
 ensureColumn("accounts", "curseforge_link", "TEXT");
+ensureColumn("accounts", "username", "TEXT DEFAULT ''");
 ensureColumn("accounts", "discord_id", "TEXT");
 ensureColumn("accounts", "discord_username", "TEXT DEFAULT ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_discord_id ON accounts(discord_id) WHERE discord_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username_nocase ON accounts(username COLLATE NOCASE) WHERE username IS NOT NULL AND username <> ''");
 
 function getEnvKey(name, bytes) {
     const value = process.env[name];
@@ -203,6 +206,21 @@ function setCurseforgeLink(accountId, curseforgeLink) {
     updateStmt.run(curseforgeLink, accountId);
 }
 
+function setAccountUsername(accountId, username) {
+    const normalizedUsername = typeof username === "string" ? username.trim() : "";
+    const now = Math.floor(Date.now() / 1000);
+    try {
+        const updateStmt = db.prepare("UPDATE accounts SET username = ?, updated_at = ? WHERE id = ?");
+        updateStmt.run(normalizedUsername, now, accountId);
+        return { ok: true };
+    } catch (error) {
+        if (String(error?.message || "").includes("UNIQUE constraint failed")) {
+            return { ok: false, error: "Username already taken" };
+        }
+        throw error;
+    }
+}
+
 function removePluginFromAllAccounts(pluginUUID) {
     if (!pluginUUID || typeof pluginUUID !== "string") {
         return 0;
@@ -253,6 +271,17 @@ function getAccountByEmail(email) {
 
 function getAccountByDiscordId(discordId) {
     return db.prepare("SELECT * FROM accounts WHERE discord_id = ?").get(discordId);
+}
+
+function getAccountByUsername(username) {
+    if (typeof username !== "string") {
+        return undefined;
+    }
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername) {
+        return undefined;
+    }
+    return db.prepare("SELECT * FROM accounts WHERE username = ? COLLATE NOCASE").get(normalizedUsername);
 }
 
 function linkDiscordToAccount(accountId, { discordId, discordUsername }) {
@@ -327,6 +356,7 @@ function toSafeAccount(accountRow) {
         id: accountRow.id,
         email: accountRow.email_enc ? decryptString(accountRow.email_enc) : "",
         plugin_access: accountRow.plugin_access,
+        username: accountRow.username || "",
         created_at: accountRow.created_at,
         updated_at: accountRow.updated_at,
         last_login: accountRow.last_login,
@@ -342,6 +372,7 @@ function toPublicAccount(accountRow) {
         return null;
     return {
         id: accountRow.id,
+        username: accountRow.username?.trim() || "No Name",
         github_link: accountRow.github_link || "",
         curseforge_link: accountRow.curseforge_link || ""
     };
@@ -353,6 +384,7 @@ export {
     getAccountById,
     getAccountByEmail,
     getAccountByDiscordId,
+    getAccountByUsername,
     createDiscordAccount,
     linkDiscordToAccount,
     syncEmailIfMissing,
@@ -364,6 +396,7 @@ export {
     toSafeAccount,
     toPublicAccount,
     getPluginsAccess,
+    setAccountUsername,
     setGithubLink,
     setCurseforgeLink,
     getAccountThatOwnsPlugin,
