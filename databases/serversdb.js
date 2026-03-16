@@ -392,20 +392,38 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
     }
 
     let country = "Unknown";
-    await axios.get(`http://ip-api.com/json/${normalizedIp}?fields=49154`)
-        .then(response => {
-            country = response.data.countryCode || "Unknown";
-        })
-        .catch(error => {
-            console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
-        }).finally(() => {
-            console.log(`Adding new server: ${uuid} with IP: ${normalizedIp || "unknown"} (${country})`);
-            const insertStmt = db.prepare(`
-                INSERT INTO servers (uuid, players_online, plugins, reporter_ip, os_name, os_version, java_version, core_count, country)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `);
-            insertStmt.run(uuid, safePlayerCount, "", normalizedIp, osName, osVersion, javaVersion, coreCount, country);
-        });
+    if (Math.random() < 0.5) {
+        await axios.get(`http://ip-api.com/json/${normalizedIp}?fields=49154`)
+            .then(response => {
+                country = response.data.countryCode || "Unknown";
+            })
+            .catch(error => {
+                console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
+            }).finally(() => {
+                console.log(`Adding new server: ${uuid} with IP: ${normalizedIp || "unknown"} (${country}) (API: ip-api.com)`);
+                const insertStmt = db.prepare(`
+                    INSERT INTO servers (uuid, players_online, plugins, reporter_ip, os_name, os_version, java_version, core_count, country)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `);
+                insertStmt.run(uuid, safePlayerCount, "", normalizedIp, osName, osVersion, javaVersion, coreCount, country);
+            });
+    } else {
+        await axios.get(`https://api.country.is/${normalizedIp}`)
+            .then(response => {
+                country = response.data.country || "Unknown";
+            })
+            .catch(error => {
+                console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
+            }).finally(() => {
+                console.log(`Adding new server: ${uuid} with IP: ${normalizedIp || "unknown"} (${country}) (API: country.is)`);
+                const insertStmt = db.prepare(`
+                    INSERT INTO servers (uuid, players_online, plugins, reporter_ip, os_name, os_version, java_version, core_count, country)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `);
+                insertStmt.run(uuid, safePlayerCount, "", normalizedIp, osName, osVersion, javaVersion, coreCount, country);
+            });
+    }
+
     return {
         accepted: true,
         rejected: false
