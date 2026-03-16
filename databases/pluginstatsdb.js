@@ -3,6 +3,7 @@ import { configDotenv } from "dotenv";
 import {
     MAX_PLAYERS_ONLINE_PER_SERVER,
     PLUGIN_HISTORY_DAYS,
+    PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER,
     PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA,
     PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA,
     PLUGIN_HISTORY_SPIKE_MULTIPLIER
@@ -191,9 +192,11 @@ function smoothHourlySpikeRows(rows) {
         const neighborAvg = (prev + next) / 2;
         const isExtremeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_SPIKE_MULTIPLIER)
             && curr >= (next * PLUGIN_HISTORY_SPIKE_MULTIPLIER);
+        const isResidualSpikeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER)
+            && curr >= (next * PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER);
         const isLargeAbsoluteGap = (curr - neighborAvg) >= minDelta;
 
-        if (!isExtremeRelativeToNeighbors || !isLargeAbsoluteGap) {
+        if ((!isExtremeRelativeToNeighbors && !isResidualSpikeRelativeToNeighbors) || !isLargeAbsoluteGap) {
             return;
         }
 

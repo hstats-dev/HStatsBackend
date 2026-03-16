@@ -6,6 +6,7 @@ import {
     AMOUNT_NEEDED_TO_DISPLAY,
     MAX_ACTIVE_SERVERS_PER_IP,
     MAX_PLAYERS_ONLINE_PER_SERVER,
+    PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER,
     PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA,
     PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA,
     PLUGIN_HISTORY_SPIKE_MULTIPLIER,
@@ -153,9 +154,11 @@ function smoothHourlySpikeRows(rows, {
         const neighborAvg = (prev + next) / 2;
         const isExtremeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_SPIKE_MULTIPLIER)
             && curr >= (next * PLUGIN_HISTORY_SPIKE_MULTIPLIER);
+        const isResidualSpikeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER)
+            && curr >= (next * PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER);
         const isLargeAbsoluteGap = (curr - neighborAvg) >= minDelta;
 
-        if (!isExtremeRelativeToNeighbors || !isLargeAbsoluteGap) {
+        if ((!isExtremeRelativeToNeighbors && !isResidualSpikeRelativeToNeighbors) || !isLargeAbsoluteGap) {
             return;
         }
 
@@ -922,7 +925,8 @@ function getGlobalHourlyStats(fromHour, toHour) {
         ORDER BY hour_start ASC
     `).all(fromStr, toStr);
 
-    return rows.map((row) => ({
+    const sanitizedRows = smoothHourlySpikeRows(rows);
+    return sanitizedRows.map((row) => ({
         hour_start: toUtcHourIsoString(row.hour_start),
         servers_count: row.servers_count,
         players_count: row.players_count
@@ -941,7 +945,8 @@ function getGlobalHourlyStatsLastDays(days = 30) {
         ORDER BY hour_start ASC
     `).all(`-${days} days`);
 
-    return rows.map((row) => ({
+    const sanitizedRows = smoothHourlySpikeRows(rows);
+    return sanitizedRows.map((row) => ({
         hour_start: toUtcHourIsoString(row.hour_start),
         servers_count: row.servers_count,
         players_count: row.players_count
@@ -966,7 +971,8 @@ function getGlobalHourlyStatsAll(limit = null) {
             LIMIT ?
         `).all(limit).reverse();
 
-    return rows.map((row) => ({
+    const sanitizedRows = smoothHourlySpikeRows(rows);
+    return sanitizedRows.map((row) => ({
         hour_start: toUtcHourIsoString(row.hour_start),
         servers_count: row.servers_count,
         players_count: row.players_count

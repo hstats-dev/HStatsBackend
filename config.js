@@ -43,6 +43,7 @@ export const VALID_JAVA_VERSIONS = ["8", "11", "16", "17", "18", "19", "20", "21
 export const AMOUNT_NEEDED_TO_DISPLAY = 5; // amount of "unique" of either OS name or Java version needed to be categorized outside of "other" and in its own
 export const PLUGIN_HISTORY_DAYS = 30; // keep and return plugin usage history for the last 30 days
 export const PLUGIN_HISTORY_SPIKE_MULTIPLIER = 8; // value must be >= this multiple of both neighboring hours to be considered a spike
+export const PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER = 1.6; // secondary smoother for post-clamp spikes that still sit far above both neighboring hours
 export const PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA = 750; // minimum absolute players gap from neighbor average before smoothing
 export const PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA = 20; // minimum absolute servers gap from neighbor average before smoothing
 
