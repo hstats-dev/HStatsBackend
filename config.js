@@ -28,7 +28,7 @@ export const EMBED_GET_RATE_LIMIT_MAX = 240;
 export const SERVER_INGEST_RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 export const SERVER_INGEST_RATE_LIMIT_MAX = 300;
 export const SERVER_INGEST_IP_RATE_LIMIT_MAX = 600;
-export const MAX_ACTIVE_SERVERS_PER_IP = 50; // maximum concurrently active server UUIDs allowed from one reporter IP
+export const MAX_ACTIVE_SERVERS_PER_IP = 100; // maximum concurrently active server UUIDs allowed from one reporter IP
 
 // Ingest anomaly guards
 export const SERVER_SPIKE_GUARD_WINDOW_MINUTES = 5; // time window to check for player count spikes
