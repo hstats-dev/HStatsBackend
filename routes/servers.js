@@ -10,6 +10,21 @@ import { MAX_PLAYERS_ONLINE_PER_SERVER } from '../config.js';
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
 
+function resolveRequestIp(req) {
+    const candidates = [
+        req.ip,
+        req.socket?.remoteAddress
+    ];
+
+    for (const candidate of candidates) {
+        if (typeof candidate === "string" && candidate.trim()) {
+            return candidate.trim();
+        }
+    }
+
+    return "";
+}
+
 function stripPluginEntryDelimiters(value) {
     if (typeof value !== "string") {
         return "";
@@ -70,9 +85,9 @@ router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter
         return res.status(400).json({ error: "cores must be a non-negative integer" });
     }
 
-    const ip = req.clientIp;
+    const ip = resolveRequestIp(req);
 
-    await addOrUpdateServer(
+    const updateResult = await addOrUpdateServer(
         req.body.server_uuid,
         ip,
         playersOnline,
@@ -81,6 +96,12 @@ router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter
         req.body.java_version,
         coreCount
     );
+
+    if (updateResult?.rejected && updateResult.reason === "ip_limit") {
+        return res.status(429).json({
+            error: "Too many active servers are already registered from this IP"
+        });
+    }
 
     addToRecentActivity(MessageType.SERVER_HEARTBEAT, {
         // player count, server uuid

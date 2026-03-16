@@ -4,7 +4,11 @@ import { configDotenv } from "dotenv";
 import { prunePluginHourlyStats, upsertPluginHourlyStats } from "./pluginstatsdb.js";
 import {
     AMOUNT_NEEDED_TO_DISPLAY,
+    MAX_ACTIVE_SERVERS_PER_IP,
     MAX_PLAYERS_ONLINE_PER_SERVER,
+    PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA,
+    PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA,
+    PLUGIN_HISTORY_SPIKE_MULTIPLIER,
     SERVER_PLAYER_SPIKE_BURST,
     SERVER_PLAYER_SPIKE_PER_MINUTE,
     SERVER_SPIKE_GUARD_WINDOW_MINUTES,
@@ -21,6 +25,7 @@ db.exec(`
         uuid TEXT PRIMARY KEY,
         players_online INTEGER,
         plugins TEXT,
+        reporter_ip TEXT DEFAULT '',
         os_name TEXT,
         os_version TEXT,
         java_version TEXT,
@@ -62,6 +67,16 @@ db.prepare(`
     VALUES (1, 0, NULL, 0, NULL, 0)
 `).run();
 
+function ensureColumn(table, column, definition) {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((row) => row.name);
+    if (!columns.includes(column)) {
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+    }
+}
+
+ensureColumn("servers", "reporter_ip", "TEXT DEFAULT ''");
+db.exec("CREATE INDEX IF NOT EXISTS idx_servers_reporter_ip ON servers(reporter_ip)");
+
 function parsePlayerCountStrict(value) {
     if (typeof value === "number") {
         if (!Number.isSafeInteger(value)) {
@@ -102,6 +117,57 @@ function clampPlayerCount(value) {
         return MAX_PLAYERS_ONLINE_PER_SERVER;
     }
     return Math.floor(numeric);
+}
+
+function toSafeNonNegativeInt(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) {
+        return 0;
+    }
+    return Math.floor(numeric);
+}
+
+function smoothHourlySpikeRows(rows, {
+    serversField = "servers_count",
+    playersField = "players_count"
+} = {}) {
+    if (!Array.isArray(rows) || rows.length < 3) {
+        return rows || [];
+    }
+
+    const smoothed = rows.map((row) => ({ ...row }));
+    const source = rows.map((row) => ({
+        [serversField]: Math.max(0, Number(row[serversField]) || 0),
+        [playersField]: Math.max(0, Number(row[playersField]) || 0)
+    }));
+
+    const smoothFieldAtIndex = (index, field, minDelta) => {
+        const prev = source[index - 1][field];
+        const curr = source[index][field];
+        const next = source[index + 1][field];
+
+        if (prev <= 0 || next <= 0) {
+            return;
+        }
+
+        const neighborAvg = (prev + next) / 2;
+        const isExtremeRelativeToNeighbors = curr >= (prev * PLUGIN_HISTORY_SPIKE_MULTIPLIER)
+            && curr >= (next * PLUGIN_HISTORY_SPIKE_MULTIPLIER);
+        const isLargeAbsoluteGap = (curr - neighborAvg) >= minDelta;
+
+        if (!isExtremeRelativeToNeighbors || !isLargeAbsoluteGap) {
+            return;
+        }
+
+        smoothed[index][field] = Math.max(0, Math.round(neighborAvg));
+    };
+
+    for (let index = 1; index < rows.length - 1; index += 1) {
+        smoothFieldAtIndex(index, serversField, PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA);
+        smoothFieldAtIndex(index, playersField, PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA);
+    }
+
+    return smoothed;
 }
 
 function formatUtcHourString(date) {
@@ -211,12 +277,89 @@ function normalizeStoredPlayerCounts() {
     }
 }
 
+function getGlobalCountableServerRows() {
+    const timeoutMinutes = getServerAliveTimeoutMinutes();
+    return db.prepare(`
+        SELECT *
+        FROM servers
+        WHERE plugins IS NOT NULL
+          AND TRIM(plugins) <> ''
+          AND last_updated >= datetime('now', ?)
+    `).all(`-${timeoutMinutes} minutes`);
+}
+
+function countActiveServersForIp(ipAddress) {
+    const normalizedIp = typeof ipAddress === "string" ? ipAddress.trim() : "";
+    if (!normalizedIp) {
+        return 0;
+    }
+
+    const timeoutMinutes = getServerAliveTimeoutMinutes();
+    const row = db.prepare(`
+        SELECT COUNT(*) AS total
+        FROM servers
+        WHERE reporter_ip = ?
+          AND last_updated >= datetime('now', ?)
+    `).get(normalizedIp, `-${timeoutMinutes} minutes`);
+
+    return row?.total || 0;
+}
+
+function enforcePerIpActiveServerLimit() {
+    const timeoutMinutes = getServerAliveTimeoutMinutes();
+    const rows = db.prepare(`
+        SELECT uuid, reporter_ip, plugins, last_updated
+        FROM servers
+        WHERE reporter_ip IS NOT NULL
+          AND TRIM(reporter_ip) <> ''
+          AND last_updated >= datetime('now', ?)
+        ORDER BY
+            reporter_ip ASC,
+            CASE WHEN plugins IS NOT NULL AND TRIM(plugins) <> '' THEN 0 ELSE 1 END ASC,
+            last_updated ASC,
+            uuid ASC
+    `).all(`-${timeoutMinutes} minutes`);
+
+    const deleteStmt = db.prepare("DELETE FROM servers WHERE uuid = ?");
+    let removed = 0;
+    let currentIp = null;
+    let keptForIp = 0;
+
+    rows.forEach((row) => {
+        const reporterIp = String(row.reporter_ip || "").trim();
+        if (!reporterIp) {
+            return;
+        }
+
+        if (reporterIp !== currentIp) {
+            currentIp = reporterIp;
+            keptForIp = 0;
+        }
+
+        if (keptForIp < MAX_ACTIVE_SERVERS_PER_IP) {
+            keptForIp += 1;
+            return;
+        }
+
+        deleteStmt.run(row.uuid);
+        removed += 1;
+    });
+
+    if (removed > 0) {
+        console.warn(`Removed ${removed} excess active servers that exceeded the per-IP limit.`);
+    }
+
+    return removed;
+}
+
 normalizeStoredPlayerCounts();
 normalizeStoredPluginEntries();
+enforcePerIpActiveServerLimit();
 
 // Initial request to add an online server
 async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion = "", javaVersion = "", coreCount = 0) {
     const safePlayerCount = parsePlayerCountStrict(playerCount);
+    const normalizedIp = typeof ip === "string" ? ip.trim() : "";
 
     const getStmt = db.prepare("SELECT * FROM servers WHERE uuid = ?");
     const row = getStmt.get(uuid);
@@ -225,23 +368,45 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
         if (guardedPlayerCount < safePlayerCount) {
             console.warn(`Suspicious player spike clamped for server ${uuid}: ${safePlayerCount} -> ${guardedPlayerCount}`);
         }
-        const updateStmt = db.prepare("UPDATE servers SET players_online = ?, last_updated = CURRENT_TIMESTAMP WHERE uuid = ?");
-        return updateStmt.run(guardedPlayerCount, uuid).changes > 0;
+        const updateStmt = db.prepare(`
+            UPDATE servers
+            SET players_online = ?, reporter_ip = ?, last_updated = CURRENT_TIMESTAMP
+            WHERE uuid = ?
+        `);
+        return {
+            accepted: updateStmt.run(guardedPlayerCount, normalizedIp, uuid).changes > 0,
+            rejected: false
+        };
+    }
+
+    if (normalizedIp && countActiveServersForIp(normalizedIp) >= MAX_ACTIVE_SERVERS_PER_IP) {
+        console.warn(`Rejected new server ${uuid} from ${normalizedIp}: active server IP limit reached.`);
+        return {
+            accepted: false,
+            rejected: true,
+            reason: "ip_limit"
+        };
     }
 
     let country = "Unknown";
-    await axios.get(`http://ip-api.com/json/${ip}?fields=49154`)
+    await axios.get(`http://ip-api.com/json/${normalizedIp}?fields=49154`)
         .then(response => {
             country = response.data.countryCode || "Unknown";
         })
         .catch(error => {
             console.warn("Error fetching geolocation data for server (" + error?.response?.data?.message + ") Using 'Unknown' as country.");
         }).finally(() => {
-            console.log(`Adding new server: ${uuid} with IP: ${ip} (${country})`);
-            const insertStmt = db.prepare("INSERT INTO servers (uuid, players_online, os_name, os_version, java_version, core_count, country) VALUES (?, ?, ?, ?, ?, ?, ?)");
-            insertStmt.run(uuid, safePlayerCount, osName, osVersion, javaVersion, coreCount, country);
+            console.log(`Adding new server: ${uuid} with IP: ${normalizedIp || "unknown"} (${country})`);
+            const insertStmt = db.prepare(`
+                INSERT INTO servers (uuid, players_online, plugins, reporter_ip, os_name, os_version, java_version, core_count, country)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `);
+            insertStmt.run(uuid, safePlayerCount, "", normalizedIp, osName, osVersion, javaVersion, coreCount, country);
         });
-    return true;
+    return {
+        accepted: true,
+        rejected: false
+    };
 }
 
 // Add a plugin to the server's list of plugins, this is called when a server starts
@@ -385,7 +550,10 @@ function getServerAliveTimeoutMinutes() {
     if (Number.isFinite(parsed) && parsed > 0) {
         return parsed;
     }
-    console.warn("SERVER_ALIVE_TIMEOUT is not set or invalid, defaulting to 10 minutes");
+    if (!getServerAliveTimeoutMinutes.warnedInvalid) {
+        console.warn("SERVER_ALIVE_TIMEOUT is not set or invalid, defaulting to 10 minutes");
+        getServerAliveTimeoutMinutes.warnedInvalid = true;
+    }
     return 10;
 }
 
@@ -394,8 +562,9 @@ function checkInActiveServers() {
     const timeoutMinutes = getServerAliveTimeoutMinutes();
     const removeStmt = db.prepare("DELETE FROM servers WHERE last_updated < datetime('now', ?)");
     const removedServers = removeStmt.run(`-${timeoutMinutes} minutes`).changes;
+    const removedByIpLimit = enforcePerIpActiveServerLimit();
 
-    const servers = db.prepare("SELECT players_online, plugins FROM servers").all();
+    const servers = getGlobalCountableServerRows();
     const currentServers = servers.length;
     const currentPlayers = servers.reduce((sum, server) => sum + clampPlayerCount(server.players_online), 0);
     const pluginUsage = new Map();
@@ -419,7 +588,7 @@ function checkInActiveServers() {
     prunePluginHourlyStats();
     upsertGlobalHourlyStats(currentServers, currentPlayers);
     updateGlobalAllTimePeaks(currentServers, currentPlayers);
-    return removedServers;
+    return removedServers + removedByIpLimit;
 }
 
 function upsertGlobalHourlyStats(serverCount, playerCount, hourStart = null) {
@@ -491,6 +660,41 @@ function updateGlobalAllTimePeaks(serverCount, playerCount, observedAt = new Dat
     );
 }
 
+function rebuildGlobalAllTimePeaks() {
+    const topServers = db.prepare(`
+        SELECT servers_count, hour_start
+        FROM global_stats_hourly
+        ORDER BY servers_count DESC, hour_start ASC
+        LIMIT 1
+    `).get();
+
+    const topPlayers = db.prepare(`
+        SELECT players_count, hour_start
+        FROM global_stats_hourly
+        ORDER BY players_count DESC, hour_start ASC
+        LIMIT 1
+    `).get();
+
+    const now = Math.floor(Date.now() / 1000);
+    const peakServersCount = toSafeNonNegativeInt(topServers?.servers_count || 0);
+    const peakServersAt = topServers?.hour_start ? toUtcHourIsoString(topServers.hour_start) : null;
+    const peakPlayersCount = toSafeNonNegativeInt(topPlayers?.players_count || 0);
+    const peakPlayersAt = topPlayers?.hour_start ? toUtcHourIsoString(topPlayers.hour_start) : null;
+
+    db.prepare(`
+        UPDATE global_all_time_peaks
+        SET
+            peak_servers_count = ?,
+            peak_servers_at = ?,
+            peak_players_count = ?,
+            peak_players_at = ?,
+            updated_at = ?
+        WHERE id = 1
+    `).run(peakServersCount, peakServersAt, peakPlayersCount, peakPlayersAt, now);
+
+    return getGlobalAllTimePeaks();
+}
+
 function setGlobalAllTimePeaksExact({
     serversCount,
     serversAt,
@@ -545,14 +749,12 @@ function setGlobalAllTimePeaksExact({
 
 
 function getTotalPlayersOnline() {
-    const rows = db.prepare("SELECT players_online FROM servers").all();
+    const rows = getGlobalCountableServerRows();
     return rows.reduce((sum, row) => sum + clampPlayerCount(row.players_online), 0);
 }
 
 function getTotalServers() {
-    const stmt = db.prepare("SELECT COUNT(*) as total FROM servers");
-    const row = stmt.get();
-    return row.total || 0;
+    return getGlobalCountableServerRows().length;
 }
 
 // Valid OS Names for statistics, this is for when there are not many
@@ -561,8 +763,7 @@ function getTotalServers() {
 // its grouped under "Other"
 function getAllOSNames() {
     let os = {};
-    const stmt = db.prepare("SELECT os_name FROM servers");
-    stmt.all().forEach(row => {
+    getGlobalCountableServerRows().forEach(row => {
         if (row.os_name && !(row.os_name in os)) {
             os[row.os_name] = 1;
         } else if (row.os_name) {
@@ -587,8 +788,7 @@ function getAllOSNames() {
 // Same idea for OS names
 function getAllJavaVersions() {
     let versions = {};
-    const stmt = db.prepare("SELECT java_version FROM servers");
-    stmt.all().forEach(row => {
+    getGlobalCountableServerRows().forEach(row => {
         if (row.java_version && !(row.java_version in versions)) {
             versions[row.java_version] = 1;
         } else if (row.java_version) {
@@ -612,8 +812,7 @@ function getAllJavaVersions() {
 
 function getAllCountries() {
     let countries = {};
-    const stmt = db.prepare("SELECT country FROM servers");
-    stmt.all().forEach(row => {
+    getGlobalCountableServerRows().forEach(row => {
         if (row.country && !(row.country in countries)) {
             countries[row.country] = 1;
         } else if (row.country) {
@@ -637,8 +836,7 @@ function getAllCountries() {
 
 function getCoreCounts() {
     let coreCounts = {};
-    const stmt = db.prepare("SELECT core_count FROM servers");
-    stmt.all().forEach(row => {
+    getGlobalCountableServerRows().forEach(row => {
         const cores = row.core_count || 0;
         if (cores < 0 || cores > 128) {
             return; // skip invalid core counts
@@ -775,9 +973,63 @@ function getGlobalHourlyStatsAll(limit = null) {
     }));
 }
 
+function repairGlobalHistory() {
+    const rows = db.prepare(`
+        SELECT hour_start, servers_count, players_count
+        FROM global_stats_hourly
+        ORDER BY hour_start ASC
+    `).all();
+
+    if (rows.length === 0) {
+        const peaks = rebuildGlobalAllTimePeaks();
+        return {
+            rows_scanned: 0,
+            rows_updated: 0,
+            peaks,
+            peak_rebuilt: true
+        };
+    }
+
+    const smoothed = smoothHourlySpikeRows(rows);
+    const updateStmt = db.prepare(`
+        UPDATE global_stats_hourly
+        SET servers_count = ?, players_count = ?, updated_at = ?
+        WHERE hour_start = ?
+    `);
+
+    const now = Math.floor(Date.now() / 1000);
+    let rowsUpdated = 0;
+
+    for (let index = 0; index < rows.length; index += 1) {
+        const before = rows[index];
+        const candidate = smoothed[index];
+
+        const nextServers = toSafeNonNegativeInt(candidate.servers_count);
+        let nextPlayers = toSafeNonNegativeInt(candidate.players_count);
+        const hardMaxPlayers = nextServers * MAX_PLAYERS_ONLINE_PER_SERVER;
+        if (nextPlayers > hardMaxPlayers) {
+            nextPlayers = hardMaxPlayers;
+        }
+
+        const beforeServers = toSafeNonNegativeInt(before.servers_count);
+        const beforePlayers = toSafeNonNegativeInt(before.players_count);
+        if (nextServers !== beforeServers || nextPlayers !== beforePlayers) {
+            updateStmt.run(nextServers, nextPlayers, now, before.hour_start);
+            rowsUpdated += 1;
+        }
+    }
+
+    const peaks = rebuildGlobalAllTimePeaks();
+    return {
+        rows_scanned: rows.length,
+        rows_updated: rowsUpdated,
+        peaks,
+        peak_rebuilt: true
+    };
+}
+
 function bootstrapGlobalAllTimePeaks() {
-    const timeoutMinutes = getServerAliveTimeoutMinutes();
-    const rows = db.prepare("SELECT players_online FROM servers WHERE last_updated >= datetime('now', ?)").all(`-${timeoutMinutes} minutes`);
+    const rows = getGlobalCountableServerRows();
     const playerCount = rows.reduce((sum, row) => sum + clampPlayerCount(row.players_online), 0);
     updateGlobalAllTimePeaks(rows.length, playerCount);
 }
@@ -799,6 +1051,7 @@ export {
     getCoreCounts,
     getServersUsingPlugin,
     getGlobalAllTimePeaks,
+    repairGlobalHistory,
     setGlobalAllTimePeaksExact,
     removePluginFromAllServers,
     getGlobalHourlyStats,

@@ -2,7 +2,6 @@ import express from "express";
 import session from "express-session";
 import SQLiteStore from "connect-sqlite3";
 import cors from "cors";
-import requestIp from "request-ip";
 import { configDotenv } from "dotenv";
 import {
     checkInActiveServers,
@@ -30,6 +29,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ActivityType, Client, Collection, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { heavyGetRateLimiter, publicGetRateLimiter } from "./middleware/rateLimiters.js";
+import { createAndUploadDatabaseBackups } from "./discord/databaseBackups.js";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once(Events.ClientReady, (readyClient) => {
@@ -91,19 +91,66 @@ client.on(Events.InteractionCreate, async (interaction) => {
 configDotenv();
 
 const app = express();
+
+if (process.env.PRODUCTION === "true")
+    app.set("trust proxy", 1);
+
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
-app.use(requestIp.mw());
 
-let onlinePlayers = getTotalPlayersOnline();
-let onlineServers = getTotalServers();
-let osNames = getAllOSNames();
-let javaVersions = getAllJavaVersions();
-let countries = getAllCountries();
-let userCount = getTotalAccounts();
-let coreCount = getCoreCounts();
-let pluginCount = getTotalPlugins();
+let onlinePlayers = 0;
+let onlineServers = 0;
+let osNames = {};
+let javaVersions = {};
+let countries = {};
+let userCount = 0;
+let coreCount = {};
+let pluginCount = 0;
 let allTimePeak = getGlobalAllTimePeaks();
+let backupJobInFlight = false;
+
+function refreshCachedStats() {
+    checkInActiveServers();
+    onlinePlayers = getTotalPlayersOnline();
+    onlineServers = getTotalServers();
+    osNames = getAllOSNames();
+    javaVersions = getAllJavaVersions();
+    countries = getAllCountries();
+    userCount = getTotalAccounts();
+    coreCount = getCoreCounts();
+    pluginCount = getTotalPlugins();
+    allTimePeak = getGlobalAllTimePeaks();
+}
+
+refreshCachedStats();
+
+async function runAutomatedDatabaseBackup(reason = "scheduled_hourly") {
+    const webhookUrl = typeof process.env.DISCORD_BACKUP_WEBHOOK === "string"
+        ? process.env.DISCORD_BACKUP_WEBHOOK.trim()
+        : "";
+
+    if (!webhookUrl) {
+        return;
+    }
+
+    if (backupJobInFlight) {
+        console.warn("Skipping database backup because a previous backup job is still running.");
+        return;
+    }
+
+    backupJobInFlight = true;
+    try {
+        const result = await createAndUploadDatabaseBackups({
+            webhookUrl,
+            reason
+        });
+        console.log(`Database backup uploaded successfully (${result.files.length} files).`);
+    } catch (error) {
+        console.error(`Database backup failed: ${error?.message || error}`);
+    } finally {
+        backupJobInFlight = false;
+    }
+}
 
 function updateDiscordPresence() {
     if (!client.isReady() || !client.user) {
@@ -112,9 +159,6 @@ function updateDiscordPresence() {
     const statusText = `${onlinePlayers.toLocaleString("en-US")} Players on ${onlineServers.toLocaleString("en-US")} Servers`;
     client.user.setActivity(statusText, { type: ActivityType.Watching });
 }
-
-if (process.env.PRODUCTION === "true")
-    app.set("trust proxy", 1);
 
 if (!process.env.SESSION_SECRET) {
     console.warn("SESSION_SECRET is not set.");
@@ -214,16 +258,11 @@ client.login(process.env.DISCORD_BOT_TOKEN);
 // Periodically check for inactive servers, while we are at it we update player count
 // cause why not do it here!
 setInterval(() => {
-    checkInActiveServers();
-    onlinePlayers = getTotalPlayersOnline();
-    onlineServers = getTotalServers();
-    osNames = getAllOSNames();
-    javaVersions = getAllJavaVersions();
-    countries = getAllCountries();
-    userCount = getTotalAccounts();
-    coreCount = getCoreCounts();
-    pluginCount = getTotalPlugins();
-    allTimePeak = getGlobalAllTimePeaks();
+    refreshCachedStats();
     updateDiscordPresence();
     console.log(`Currently ${onlineServers} online servers with ${onlinePlayers} total players.`);
 }, process.env.SERVER_ALIVE_CHECK_INTERVAL * 60 * 1000); // minutes
+
+setInterval(() => {
+    runAutomatedDatabaseBackup();
+}, 60 * 60 * 1000); // hourly

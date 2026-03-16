@@ -354,7 +354,10 @@ router.post("/register", authRateLimiter, async (req, res) => {
         return res.status(400).json({ error: "Missing reCAPTCHA token" });
     }
 
-    const recaptchaResult = await verifyRecaptcha(recaptchaToken, req.clientIp || req.ip);
+    const recaptchaResult = await verifyRecaptcha(
+        recaptchaToken,
+        req.ip || req.socket?.remoteAddress || ""
+    );
     if (!recaptchaResult.ok) {
         if (recaptchaResult.type === "config") {
             return res.status(500).json({ error: "reCAPTCHA is not configured on the server" });
