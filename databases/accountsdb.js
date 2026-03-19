@@ -2,6 +2,7 @@ import betterSQL from "better-sqlite3";
 import crypto from "crypto";
 import { configDotenv } from "dotenv";
 import { ACCOUNT_SESSION_DURATION_DAYS } from "../config.js";
+import { getPlugin } from "./plugindb.js";
 configDotenv();
 
 const db = betterSQL(process.env.ACCOUNTS_DB);
@@ -245,6 +246,53 @@ function removePluginFromAllAccounts(pluginUUID) {
     return changes;
 }
 
+function cleanupStalePluginAccessReferences() {
+    const rows = db.prepare("SELECT id, plugin_access FROM accounts").all();
+    const updateStmt = db.prepare("UPDATE accounts SET plugin_access = ? WHERE id = ?");
+    let accountsUpdated = 0;
+    let staleEntriesRemoved = 0;
+
+    rows.forEach((row) => {
+        const current = typeof row.plugin_access === "string" && row.plugin_access.trim()
+            ? row.plugin_access.split(",").map((value) => value.trim()).filter(Boolean)
+            : [];
+
+        if (current.length === 0) {
+            return;
+        }
+
+        const seen = new Set();
+        const next = [];
+
+        current.forEach((pluginUUID) => {
+            if (seen.has(pluginUUID)) {
+                staleEntriesRemoved += 1;
+                return;
+            }
+            seen.add(pluginUUID);
+
+            if (!getPlugin(pluginUUID)) {
+                staleEntriesRemoved += 1;
+                return;
+            }
+
+            next.push(pluginUUID);
+        });
+
+        const nextValue = next.join(",");
+        if (nextValue !== row.plugin_access) {
+            updateStmt.run(nextValue, row.id);
+            accountsUpdated += 1;
+        }
+    });
+
+    return {
+        accounts_scanned: rows.length,
+        accounts_updated: accountsUpdated,
+        stale_entries_removed: staleEntriesRemoved
+    };
+}
+
 function deleteAccountById(accountId) {
     if (!accountId || typeof accountId !== "string") {
         return 0;
@@ -401,5 +449,6 @@ export {
     setCurseforgeLink,
     getAccountThatOwnsPlugin,
     removePluginFromAllAccounts,
+    cleanupStalePluginAccessReferences,
     deleteAccountById
 };

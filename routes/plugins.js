@@ -2,7 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import BadWordsNext from 'bad-words-next';
 import en from 'bad-words-next/lib/en';
-import { getServersUsingPlugin } from '../databases/serversdb.js';
+import { getServersUsingPlugin, removePluginFromAllServers } from '../databases/serversdb.js';
 import {
     addOrUpdatePlugin,
     deletePlugin,
@@ -14,8 +14,8 @@ import {
     toPublicPlugin
 } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
-import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess } from '../databases/accountsdb.js';
-import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
+import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess, removePluginFromAllAccounts } from '../databases/accountsdb.js';
+import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { MAX_PLUGINS_PER_USER } from '../config.js';
 import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
@@ -178,6 +178,9 @@ router.post("/delete-plugin", requireSession, (req, res) => {
         return res.status(403).json({ error: "Cannot delete a plugin you do not have access to" });
     }
 
+    removePluginFromAllAccounts(plugin.uuid);
+    removePluginFromAllServers(plugin.uuid);
+    deletePluginStats(plugin.uuid);
     deletePlugin(plugin.uuid);
     res.status(200).json({ message: "Plugin deleted successfully" });
 });
