@@ -119,7 +119,7 @@ function addOrUpdatePlugin(uuid, name, publicUuid = null) {
     }
 }
 
-function getListOfPlugins(searchTerm = "", maxResults = 50, page = 1) {
+function getListOfPlugins(searchTerm = "", maxResults = 51, page = 1) {
     let stmt;
     if (searchTerm) {
         stmt = db.prepare("SELECT * FROM plugins WHERE name LIKE ? ORDER BY added_on DESC LIMIT ? OFFSET ?");
