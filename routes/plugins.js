@@ -2,7 +2,7 @@ import express from 'express';
 import crypto from 'crypto';
 import BadWordsNext from 'bad-words-next';
 import en from 'bad-words-next/lib/en';
-import { getServersUsingPlugin, removePluginFromAllServers } from '../databases/serversdb.js';
+import { getServersUsingPlugin, removePluginFromAllServers, replacePluginUuidInAllServers } from '../databases/serversdb.js';
 import {
     addOrUpdatePlugin,
     deletePlugin,
@@ -10,14 +10,16 @@ import {
     getPlugin,
     getPluginByAnyUUID,
     getPluginByPublicUUID,
+    isAnyPluginUuidTaken,
+    rotatePluginPrivateUuid,
     setPluginLinks,
     toPublicPlugin
 } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
-import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess, removePluginFromAllAccounts } from '../databases/accountsdb.js';
-import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays } from '../databases/pluginstatsdb.js';
+import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess, removePluginFromAllAccounts, replacePluginAccessUuid } from '../databases/accountsdb.js';
+import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays, replacePluginStatsUuid } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
-import { MAX_PLUGINS_PER_USER } from '../config.js';
+import { MAX_PLUGINS_PER_USER, PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS } from '../config.js';
 import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
 
 const router = express.Router();
@@ -104,6 +106,14 @@ function validateOptionalPluginLink(value, kind) {
     return { ok: true, value: trimmed };
 }
 
+function generateUniquePrivatePluginUUID() {
+    let privatePluginUUID = crypto.randomUUID();
+    while (isAnyPluginUuidTaken(privatePluginUUID)) {
+        privatePluginUUID = crypto.randomUUID();
+    }
+    return privatePluginUUID;
+}
+
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
@@ -139,10 +149,7 @@ router.post("/add-plugin", requireSession, (req, res) => {
         });
     }
 
-    let privatePluginUUID = crypto.randomUUID();
-    while (getPlugin(privatePluginUUID) !== undefined) {
-        privatePluginUUID = crypto.randomUUID();
-    }
+    const privatePluginUUID = generateUniquePrivatePluginUUID();
 
     addOrUpdatePlugin(privatePluginUUID, pluginName);
     const createdPlugin = getPlugin(privatePluginUUID);
@@ -183,6 +190,84 @@ router.post("/delete-plugin", requireSession, (req, res) => {
     deletePluginStats(plugin.uuid);
     deletePlugin(plugin.uuid);
     res.status(200).json({ message: "Plugin deleted successfully" });
+});
+
+router.post("/refresh-private-plugin-uuid", requireSession, (req, res) => {
+    const inputUuid = typeof req.body?.plugin_uuid === "string" ? req.body.plugin_uuid.trim() : "";
+    if (!inputUuid) {
+        return res.status(400).json({ error: "Missing plugin_uuid field" });
+    }
+
+    const plugin = getPluginByAnyUUID(inputUuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const pluginAccess = getPluginsAccess(req.account.id);
+    if (!pluginAccess.includes(plugin.uuid)) {
+        return res.status(403).json({ error: "Cannot refresh a plugin you do not have access to" });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const lastRefreshAt = Number(plugin.last_private_uuid_refresh_at) || 0;
+    const nextRefreshAt = lastRefreshAt + PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS;
+    if (lastRefreshAt > 0 && now < nextRefreshAt) {
+        return res.status(429).json({
+            error: "Private plugin UUID can only be refreshed once every 24 hours",
+            retry_after_seconds: nextRefreshAt - now,
+            next_refresh_at: new Date(nextRefreshAt * 1000).toISOString()
+        });
+    }
+
+    const oldPrivateUuid = plugin.uuid;
+    const newPrivateUuid = generateUniquePrivatePluginUUID();
+    let accessUpdated = false;
+    let serversUpdated = false;
+    let statsUpdated = false;
+    let pluginUpdated = false;
+
+    try {
+        replacePluginAccessUuid(oldPrivateUuid, newPrivateUuid);
+        accessUpdated = true;
+        replacePluginUuidInAllServers(oldPrivateUuid, newPrivateUuid);
+        serversUpdated = true;
+        replacePluginStatsUuid(oldPrivateUuid, newPrivateUuid);
+        statsUpdated = true;
+        const updatedPlugin = rotatePluginPrivateUuid(oldPrivateUuid, newPrivateUuid, now);
+        pluginUpdated = !!updatedPlugin;
+
+        if (!updatedPlugin) {
+            throw new Error("Failed to refresh plugin UUID");
+        }
+
+        const publicPlugin = toPublicPlugin(updatedPlugin, { includePrivate: true });
+        return res.status(200).json({
+            status: "success",
+            plugin_uuid: publicPlugin.uuid,
+            private_plugin_uuid: publicPlugin.private_uuid,
+            last_private_uuid_refresh_at: new Date(now * 1000).toISOString(),
+            next_refresh_at: new Date((now + PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS) * 1000).toISOString()
+        });
+    } catch (error) {
+        console.error(`Failed to refresh private UUID for plugin ${oldPrivateUuid}:`, error);
+        try {
+            if (pluginUpdated) {
+                rotatePluginPrivateUuid(newPrivateUuid, oldPrivateUuid, lastRefreshAt);
+            }
+            if (statsUpdated) {
+                replacePluginStatsUuid(newPrivateUuid, oldPrivateUuid);
+            }
+            if (serversUpdated) {
+                replacePluginUuidInAllServers(newPrivateUuid, oldPrivateUuid);
+            }
+            if (accessUpdated) {
+                replacePluginAccessUuid(newPrivateUuid, oldPrivateUuid);
+            }
+        } catch (rollbackError) {
+            console.error(`Rollback failed while restoring private UUID for plugin ${oldPrivateUuid}:`, rollbackError);
+        }
+        return res.status(500).json({ error: "Failed to refresh private plugin UUID" });
+    }
 });
 
 router.post("/apply-plugin-links", requireSession, (req, res) => {
@@ -235,7 +320,7 @@ router.post("/apply-plugin-links", requireSession, (req, res) => {
 
 router.get("/list-plugins", heavyGetRateLimiter, (req, res) => {
     const searchTerm = typeof req.query.search === "string" ? req.query.search : "";
-    const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 50, 50));
+    const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 51, 51));
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const allPlugins = getAllPlugins(searchTerm);
 
@@ -378,7 +463,7 @@ router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
             }
             return a[0].localeCompare(b[0]);
         })
-        .slice(0, 50)
+        .slice(0, 51)
         .map(([pluginUUID, timesSeen]) => {
             const coPlugin = getPlugin(pluginUUID);
             if (!coPlugin) {

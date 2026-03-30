@@ -657,6 +657,48 @@ function deletePluginStats(pluginUUID) {
     };
 }
 
+function replacePluginStatsUuid(oldPluginUUID, newPluginUUID) {
+    if (!oldPluginUUID || typeof oldPluginUUID !== "string") {
+        throw new Error("oldPluginUUID must be a non-empty string");
+    }
+    if (!newPluginUUID || typeof newPluginUUID !== "string") {
+        throw new Error("newPluginUUID must be a non-empty string");
+    }
+    if (oldPluginUUID === newPluginUUID) {
+        return {
+            hourly_rows_updated: 0,
+            peaks_rows_updated: 0
+        };
+    }
+
+    const targetHourlyExists = db.prepare("SELECT 1 FROM plugin_stats_hourly WHERE plugin_uuid = ? LIMIT 1").get(newPluginUUID);
+    const targetPeaksExists = db.prepare("SELECT 1 FROM plugin_all_time_peaks WHERE plugin_uuid = ? LIMIT 1").get(newPluginUUID);
+    if (targetHourlyExists || targetPeaksExists) {
+        throw new Error("newPluginUUID already exists in plugin stats");
+    }
+
+    const runReplace = db.transaction(() => {
+        const hourlyRowsUpdated = db.prepare(`
+            UPDATE plugin_stats_hourly
+            SET plugin_uuid = ?
+            WHERE plugin_uuid = ?
+        `).run(newPluginUUID, oldPluginUUID).changes || 0;
+
+        const peaksRowsUpdated = db.prepare(`
+            UPDATE plugin_all_time_peaks
+            SET plugin_uuid = ?
+            WHERE plugin_uuid = ?
+        `).run(newPluginUUID, oldPluginUUID).changes || 0;
+
+        return {
+            hourly_rows_updated: hourlyRowsUpdated,
+            peaks_rows_updated: peaksRowsUpdated
+        };
+    });
+
+    return runReplace();
+}
+
 /*
 Compatibility alias for older call sites.
 */
@@ -701,6 +743,7 @@ export {
     rebuildPluginAllTimePeak,
     repairPluginHistory,
     deletePluginStats,
+    replacePluginStatsUuid,
     getPluginDailyStatsLastDays,
     prunePluginHourlyStats,
     prunePluginDailyStats

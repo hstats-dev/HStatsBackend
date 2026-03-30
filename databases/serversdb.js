@@ -2,6 +2,8 @@ import betterSQL from "better-sqlite3";
 import axios from "axios";
 import { configDotenv } from "dotenv";
 import { prunePluginHourlyStats, upsertPluginHourlyStats } from "./pluginstatsdb.js";
+import { getPlugin } from "./plugindb.js";
+import { queueSecurityAlert } from "../utils/siteSecurityAlerts.js";
 import {
     AMOUNT_NEEDED_TO_DISPLAY,
     MAX_ACTIVE_SERVERS_PER_IP,
@@ -230,6 +232,20 @@ function parseSqliteTimestampToMs(sqliteTimestamp) {
     return parsedMs;
 }
 
+function formatPluginEntriesForAlert(pluginsValue) {
+    const entries = parsePluginEntries(pluginsValue);
+    if (entries.length === 0) {
+        return "none";
+    }
+
+    return entries.map((entry) => {
+        const { pluginUUID, version } = parsePluginUUIDAndVersion(entry);
+        const plugin = pluginUUID ? getPlugin(pluginUUID) : null;
+        const pluginLabel = plugin?.name ? `${plugin.name} (${pluginUUID})` : (pluginUUID || "unknown");
+        return `${pluginLabel} @ ${version}`;
+    }).join("\n");
+}
+
 function applyPerServerPlayerSpikeGuard(previousCount, previousUpdatedAt, incomingCount) {
     const previousPlayers = clampPlayerCount(previousCount);
     const incomingPlayers = clampPlayerCount(incomingCount);
@@ -277,6 +293,16 @@ function normalizeStoredPlayerCounts() {
     const result = stmt.run(MAX_PLAYERS_ONLINE_PER_SERVER, MAX_PLAYERS_ONLINE_PER_SERVER, MAX_PLAYERS_ONLINE_PER_SERVER);
     if (result.changes > 0) {
         console.warn(`Normalized ${result.changes} spoofed/invalid players_online values in servers table.`);
+        queueSecurityAlert({
+            title: "Normalized Stored Server Player Counts",
+            description: "Startup normalization corrected invalid or spoofed player counts already stored in the servers table.",
+            severity: "high",
+            dedupeKey: "startup-normalized-player-counts",
+            fields: [
+                { name: "Rows Normalized", value: String(result.changes), inline: true },
+                { name: "Per-Server Max", value: String(MAX_PLAYERS_ONLINE_PER_SERVER), inline: true }
+            ]
+        });
     }
 }
 
@@ -327,6 +353,7 @@ function enforcePerIpActiveServerLimit() {
     let removed = 0;
     let currentIp = null;
     let keptForIp = 0;
+    const removedByIp = new Map();
 
     rows.forEach((row) => {
         const reporterIp = String(row.reporter_ip || "").trim();
@@ -346,10 +373,27 @@ function enforcePerIpActiveServerLimit() {
 
         deleteStmt.run(row.uuid);
         removed += 1;
+        removedByIp.set(reporterIp, (removedByIp.get(reporterIp) || 0) + 1);
     });
 
     if (removed > 0) {
         console.warn(`Removed ${removed} excess active servers that exceeded the per-IP limit.`);
+        const topIps = Array.from(removedByIp.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 5)
+            .map(([ip, count]) => `${ip}: ${count}`)
+            .join("\n");
+        queueSecurityAlert({
+            title: "Removed Excess Active Servers For IP Flooding",
+            description: "Active server rows were pruned because one or more reporter IPs exceeded the allowed active server UUID limit.",
+            severity: "high",
+            dedupeKey: "startup-or-checkin-ip-limit-prune",
+            fields: [
+                { name: "Servers Removed", value: String(removed), inline: true },
+                { name: "IP Limit", value: String(MAX_ACTIVE_SERVERS_PER_IP), inline: true },
+                { name: "Top Reporter IPs", value: topIps || "n/a", inline: false }
+            ]
+        });
     }
 
     return removed;
@@ -370,6 +414,20 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
         const guardedPlayerCount = applyPerServerPlayerSpikeGuard(row.players_online, row.last_updated, safePlayerCount);
         if (guardedPlayerCount < safePlayerCount) {
             console.warn(`Suspicious player spike clamped for server ${uuid}: ${safePlayerCount} -> ${guardedPlayerCount}`);
+            queueSecurityAlert({
+                title: "Clamped Suspicious Player Spike",
+                description: "A server heartbeat tried to increase player count far faster than the configured spike guard allows.",
+                severity: "high",
+                dedupeKey: `server-player-spike:${uuid}`,
+                fields: [
+                    { name: "Server UUID", value: uuid, inline: false },
+                    { name: "Reporter IP", value: normalizedIp || row.reporter_ip || "unknown", inline: true },
+                    { name: "Previous Players", value: String(clampPlayerCount(row.players_online)), inline: true },
+                    { name: "Attempted Players", value: String(safePlayerCount), inline: true },
+                    { name: "Accepted Players", value: String(guardedPlayerCount), inline: true },
+                    { name: "Current Plugin Entries", value: formatPluginEntriesForAlert(row.plugins), inline: false }
+                ]
+            });
         }
         const updateStmt = db.prepare(`
             UPDATE servers
@@ -382,12 +440,15 @@ async function addOrUpdateServer(uuid, ip, playerCount, osName = "", osVersion =
         };
     }
 
-    if (normalizedIp && countActiveServersForIp(normalizedIp) >= MAX_ACTIVE_SERVERS_PER_IP) {
+    const activeServerCountForIp = normalizedIp ? countActiveServersForIp(normalizedIp) : 0;
+    if (normalizedIp && activeServerCountForIp >= MAX_ACTIVE_SERVERS_PER_IP) {
         console.warn(`Rejected new server ${uuid} from ${normalizedIp}: active server IP limit reached.`);
         return {
             accepted: false,
             rejected: true,
-            reason: "ip_limit"
+            reason: "ip_limit",
+            activeServerCount: activeServerCountForIp,
+            ipLimit: MAX_ACTIVE_SERVERS_PER_IP
         };
     }
 
@@ -909,6 +970,47 @@ function removePluginFromAllServers(pluginUUID) {
     return changes;
 }
 
+function replacePluginUuidInAllServers(oldPluginUUID, newPluginUUID) {
+    if (!oldPluginUUID || typeof oldPluginUUID !== "string") {
+        throw new Error("oldPluginUUID must be a non-empty string");
+    }
+    if (!newPluginUUID || typeof newPluginUUID !== "string") {
+        throw new Error("newPluginUUID must be a non-empty string");
+    }
+    if (oldPluginUUID === newPluginUUID) {
+        return {
+            servers_scanned: 0,
+            servers_updated: 0
+        };
+    }
+
+    const rows = db.prepare("SELECT uuid, plugins FROM servers WHERE plugins LIKE ?").all(`%${oldPluginUUID}%`);
+    const updateStmt = db.prepare("UPDATE servers SET plugins = ? WHERE uuid = ?");
+    let serversUpdated = 0;
+
+    rows.forEach((row) => {
+        const nextEntries = parsePluginEntries(row.plugins).map((entry) => {
+            const { pluginUUID, version } = parsePluginUUIDAndVersion(entry);
+            if (!pluginUUID) {
+                return "";
+            }
+            const mappedUuid = pluginUUID === oldPluginUUID ? newPluginUUID : pluginUUID;
+            return `${mappedUuid}@${version}`;
+        }).filter(Boolean);
+
+        const nextValue = normalizePluginEntriesValue(nextEntries.join(","));
+        if (nextValue !== (row.plugins || "")) {
+            updateStmt.run(nextValue, row.uuid);
+            serversUpdated += 1;
+        }
+    });
+
+    return {
+        servers_scanned: rows.length,
+        servers_updated: serversUpdated
+    };
+}
+
 function getGlobalAllTimePeaks() {
     const row = db.prepare(`
         SELECT
@@ -1078,6 +1180,7 @@ export {
     repairGlobalHistory,
     setGlobalAllTimePeaksExact,
     removePluginFromAllServers,
+    replacePluginUuidInAllServers,
     getGlobalHourlyStats,
     getGlobalHourlyStatsLastDays,
     getGlobalHourlyStatsAll

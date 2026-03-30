@@ -6,6 +6,7 @@ import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { getPlugin } from '../databases/plugindb.js';
 import { serverIngestIpRateLimiter, serverIngestRateLimiter } from '../middleware/rateLimiters.js';
 import { MAX_PLAYERS_ONLINE_PER_SERVER } from '../config.js';
+import { queueSecurityAlert } from '../utils/siteSecurityAlerts.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
@@ -30,6 +31,26 @@ function stripPluginEntryDelimiters(value) {
         return "";
     }
     return value.replace(/[,@]/g, "").trim();
+}
+
+function formatPluginEntriesForAlert(pluginsValue) {
+    if (typeof pluginsValue !== "string" || !pluginsValue.trim()) {
+        return "none";
+    }
+
+    return pluginsValue
+        .split(",")
+        .map((entryRaw) => String(entryRaw || "").trim())
+        .filter(Boolean)
+        .map((entry) => {
+            const [pluginUuidRaw, pluginVersionRaw] = entry.split("@");
+            const pluginUuid = String(pluginUuidRaw || "").trim();
+            const pluginVersion = String(pluginVersionRaw || "").trim() || "Unknown";
+            const plugin = pluginUuid ? getPlugin(pluginUuid) : null;
+            const pluginLabel = plugin?.name ? `${plugin.name} (${pluginUuid})` : (pluginUuid || "unknown");
+            return `${pluginLabel} @ ${pluginVersion}`;
+        })
+        .join("\n");
 }
 
 function parseStrictNonNegativeInt(value) {
@@ -69,8 +90,28 @@ router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter
     if (!req.body.server_uuid || !isCanonicalUuid(req.body.server_uuid))
         return res.status(400).json({ error: "server_uuid must be a valid UUID" });
     const playersOnline = parseStrictNonNegativeInt(req.body.players_online);
-    if (playersOnline === null || playersOnline > MAX_PLAYERS_ONLINE_PER_SERVER)
+    if (playersOnline === null || playersOnline > MAX_PLAYERS_ONLINE_PER_SERVER) {
+        const attemptedPlayers = typeof req.body?.players_online === "string" || typeof req.body?.players_online === "number"
+            ? String(req.body.players_online)
+            : "invalid";
+        if (/^\d+$/.test(attemptedPlayers) && Number.parseInt(attemptedPlayers, 10) > MAX_PLAYERS_ONLINE_PER_SERVER) {
+            const existingServer = getServer(req.body.server_uuid);
+            queueSecurityAlert({
+                title: "Rejected Over-Max Player Count",
+                description: "A server heartbeat tried to submit a player count above the configured per-server maximum.",
+                severity: "high",
+                dedupeKey: `update-server-over-max:${req.body.server_uuid}`,
+                fields: [
+                    { name: "Server UUID", value: req.body.server_uuid, inline: false },
+                    { name: "Reporter IP", value: resolveRequestIp(req) || "unknown", inline: true },
+                    { name: "Attempted Players", value: attemptedPlayers, inline: true },
+                    { name: "Max Allowed", value: String(MAX_PLAYERS_ONLINE_PER_SERVER), inline: true },
+                    { name: "Current Plugin Entries", value: formatPluginEntriesForAlert(existingServer?.plugins), inline: false }
+                ]
+            });
+        }
         return res.status(400).json({ error: "players_online must be an integer" });
+    }
     if (req.body.os_name === undefined || req.body.os_name === null)
         return res.status(400).json({ error: "Missing os_name parameter" });
     if (req.body.os_version === undefined || req.body.os_version === null)
@@ -98,6 +139,19 @@ router.post("/update-server", serverIngestIpRateLimiter, serverIngestRateLimiter
     );
 
     if (updateResult?.rejected && updateResult.reason === "ip_limit") {
+        queueSecurityAlert({
+            title: "Rejected Server Registration Due To IP Limit",
+            description: "A new server heartbeat was rejected because the reporter IP already has too many active server UUIDs.",
+            severity: "high",
+            dedupeKey: `update-server-ip-limit:${ip}`,
+            fields: [
+                { name: "Reporter IP", value: ip || "unknown", inline: true },
+                { name: "Server UUID", value: req.body.server_uuid, inline: true },
+                { name: "Players", value: String(playersOnline), inline: true },
+                { name: "Active Servers From IP", value: String(updateResult.activeServerCount || "unknown"), inline: true },
+                { name: "IP Limit", value: String(updateResult.ipLimit || "unknown"), inline: true }
+            ]
+        });
         return res.status(429).json({
             error: "Too many active servers are already registered from this IP"
         });
@@ -120,6 +174,18 @@ router.post("/add-plugin", serverIngestIpRateLimiter, serverIngestRateLimiter, (
         return res.status(400).json({ error: "plugin_uuid must be a valid UUID" });
     const plugin = getPlugin(pluginUuid);
     if (!plugin) {
+        queueSecurityAlert({
+            title: "Unknown Private Plugin UUID On Ingest",
+            description: "A server tried to attach a plugin UUID that does not exist in the private plugin registry.",
+            severity: "high",
+            dedupeKey: `add-plugin-unknown-plugin:${pluginUuid}`,
+            fields: [
+                { name: "Server UUID", value: req.body.server_uuid, inline: true },
+                { name: "Reporter IP", value: resolveRequestIp(req) || "unknown", inline: true },
+                { name: "Plugin UUID", value: pluginUuid, inline: false },
+                { name: "Version", value: String(req.body.plugin_version || "Unknown"), inline: true }
+            ]
+        });
         return res.status(404).json({ error: "Plugin not found" });
     }
     const pluginVersionInput = typeof req.body.plugin_version === "string" && req.body.plugin_version.trim()
@@ -129,6 +195,18 @@ router.post("/add-plugin", serverIngestIpRateLimiter, serverIngestRateLimiter, (
 
     if (getServer(req.body.server_uuid) === undefined) {
         console.log("Server not found: " + req.body.server_uuid);
+        queueSecurityAlert({
+            title: "Plugin Attach For Missing Server UUID",
+            description: "A plugin attach request referenced a server UUID that does not exist in the active servers table.",
+            severity: "medium",
+            dedupeKey: `add-plugin-missing-server:${req.body.server_uuid}`,
+            fields: [
+                { name: "Server UUID", value: req.body.server_uuid, inline: true },
+                { name: "Reporter IP", value: resolveRequestIp(req) || "unknown", inline: true },
+                { name: "Plugin UUID", value: pluginUuid, inline: false },
+                { name: "Version", value: pluginVersion, inline: true }
+            ]
+        });
         return res.status(404).json({ error: "Server not found" });
     }
 

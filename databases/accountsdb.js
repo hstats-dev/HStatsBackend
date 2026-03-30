@@ -246,6 +246,63 @@ function removePluginFromAllAccounts(pluginUUID) {
     return changes;
 }
 
+function replacePluginAccessUuid(oldPluginUUID, newPluginUUID) {
+    if (!oldPluginUUID || typeof oldPluginUUID !== "string") {
+        throw new Error("oldPluginUUID must be a non-empty string");
+    }
+    if (!newPluginUUID || typeof newPluginUUID !== "string") {
+        throw new Error("newPluginUUID must be a non-empty string");
+    }
+    if (oldPluginUUID === newPluginUUID) {
+        return {
+            accounts_scanned: 0,
+            accounts_updated: 0
+        };
+    }
+
+    const rows = db.prepare("SELECT id, plugin_access FROM accounts WHERE plugin_access LIKE ?").all(`%${oldPluginUUID}%`);
+    const updateStmt = db.prepare("UPDATE accounts SET plugin_access = ? WHERE id = ?");
+    let accountsUpdated = 0;
+
+    rows.forEach((row) => {
+        const current = typeof row.plugin_access === "string" && row.plugin_access.trim()
+            ? row.plugin_access.split(",").map((value) => value.trim()).filter(Boolean)
+            : [];
+
+        if (current.length === 0) {
+            return;
+        }
+
+        let changed = false;
+        const seen = new Set();
+        const next = [];
+
+        current.forEach((value) => {
+            const mappedValue = value === oldPluginUUID ? newPluginUUID : value;
+            if (mappedValue !== value) {
+                changed = true;
+            }
+            if (seen.has(mappedValue)) {
+                changed = true;
+                return;
+            }
+            seen.add(mappedValue);
+            next.push(mappedValue);
+        });
+
+        const nextValue = next.join(",");
+        if (changed && nextValue !== (row.plugin_access || "")) {
+            updateStmt.run(nextValue, row.id);
+            accountsUpdated += 1;
+        }
+    });
+
+    return {
+        accounts_scanned: rows.length,
+        accounts_updated: accountsUpdated
+    };
+}
+
 function cleanupStalePluginAccessReferences() {
     const rows = db.prepare("SELECT id, plugin_access FROM accounts").all();
     const updateStmt = db.prepare("UPDATE accounts SET plugin_access = ? WHERE id = ?");
@@ -449,6 +506,7 @@ export {
     setCurseforgeLink,
     getAccountThatOwnsPlugin,
     removePluginFromAllAccounts,
+    replacePluginAccessUuid,
     cleanupStalePluginAccessReferences,
     deleteAccountById
 };

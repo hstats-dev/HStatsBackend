@@ -2,7 +2,8 @@ import express from "express";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { getPluginByPublicUUID } from "../databases/plugindb.js";
+import { getPlugin, getPluginByPublicUUID } from "../databases/plugindb.js";
+import { getAccountById, getPluginsAccess } from "../databases/accountsdb.js";
 import { getServersUsingPlugin } from "../databases/serversdb.js";
 import { getPluginAllTimePeak, getPluginDailyStatsLastDays } from "../databases/pluginstatsdb.js";
 import { embedGetRateLimiter } from "../middleware/rateLimiters.js";
@@ -294,9 +295,9 @@ function buildSeriesPaths(values, chartX, chartY, chartW, chartH, maxValue) {
     return { linePath, areaPath, points };
 }
 
-function wrapCardContent(content) {
+function wrapCardContent(content, targetUrl = TARGET_URL) {
     return `
-    <a href="${TARGET_URL}" target="_blank" rel="noopener noreferrer" style="cursor:pointer;">
+    <a href="${targetUrl}" target="_blank" rel="noopener noreferrer" style="cursor:pointer;">
         ${content}
     </a>`;
 }
@@ -321,6 +322,8 @@ function renderCompactLayout(data, options, theme, width, height) {
     const statW = Math.floor((contentWidth - gap) / 2);
 
     const nameFontSize = getNameFontSize(data.name.length, height);
+    const kickerText = escapeXml(data.kicker || "PLUGIN METRICS");
+    const subtitleText = escapeXml(data.subtitle || "");
 
     const logoBlock = `
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
@@ -332,8 +335,9 @@ function renderCompactLayout(data, options, theme, width, height) {
         <line x1="${padding + leftColWidth}" y1="${Math.round(height * 0.08)}" x2="${padding + leftColWidth}" y2="${Math.round(height * 0.92)}" stroke="${theme.divider}"/>
         ${logoBlock}
 
-        <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
+        <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
         <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
+        ${subtitleText ? `<text x="${contentX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="600">${subtitleText}</text>` : ""}
 
         <g transform="translate(${contentX} ${statsY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
@@ -347,7 +351,7 @@ function renderCompactLayout(data, options, theme, width, height) {
             <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.players}</text>
         </g>`;
 
-    return wrapCardContent(main);
+    return wrapCardContent(main, data.targetUrl);
 }
 
 function renderHistoryLayout(data, options, theme, width, height) {
@@ -399,6 +403,9 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const peakPlayers = playerValues.length > 0 ? Math.max(...playerValues) : 0;
     const latestServersPoint = serversSeries.points[serversSeries.points.length - 1];
     const latestPlayersPoint = playersSeries.points[playersSeries.points.length - 1];
+    const kickerText = escapeXml(data.historyKicker || "PLUGIN HISTORY (HOURLY PEAKS)");
+    const subtitleText = escapeXml(data.historySubtitle || "30-day hourly trend (UTC). Red = servers, green = players.");
+    const peakSummaryLabel = escapeXml(data.peakSummaryLabel || "All-time");
 
     const gridLines = [0, 1, 2, 3].map((index) => {
         const ratio = index / 3;
@@ -417,14 +424,14 @@ function renderHistoryLayout(data, options, theme, width, height) {
         ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No history yet. Showing current snapshot.</text>`
         : "";
 
-    const allTimePeakText = `All-time: ${data.allTimePeakServers} servers | ${data.allTimePeakPlayers} players`;
+    const allTimePeakText = `${peakSummaryLabel}: ${data.allTimePeakServers} servers | ${data.allTimePeakPlayers} players`;
 
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">PLUGIN HISTORY (HOURLY PEAKS)</text>
+        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
         <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
-        <text x="${titleX}" y="${subtitleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="600">30-day hourly trend (UTC). Red = servers, green = players.</text>
+        <text x="${titleX}" y="${subtitleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="600">${subtitleText}</text>
         <text x="${titleX}" y="${subtitleY2}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="600">${allTimePeakText}</text>
         <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
 
@@ -463,7 +470,7 @@ function renderHistoryLayout(data, options, theme, width, height) {
         </g>
     `;
 
-    return wrapCardContent(main);
+    return wrapCardContent(main, data.targetUrl);
 }
 
 function renderStackedLayout(data, options, theme, width, height) {
@@ -487,14 +494,17 @@ function renderStackedLayout(data, options, theme, width, height) {
     const statW = Math.floor((width - (padding * 2) - gap) / 2);
 
     const nameFontSize = getNameFontSize(data.name.length, height);
+    const kickerText = escapeXml(data.kicker || "PLUGIN METRICS");
+    const subtitleText = escapeXml(data.subtitle || "");
 
     const main = `
         <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
         <text x="${watermarkX}" y="${watermarkY}" fill="${theme.text}" fill-opacity="0.85" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.08)}" font-weight="800" text-anchor="end">hstats.dev</text>
 
-        <text x="${headerX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.8">PLUGIN METRICS</text>
+        <text x="${headerX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
         <text x="${headerX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
+        ${subtitleText ? `<text x="${headerX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.055)}" font-weight="600">${subtitleText}</text>` : ""}
 
         <g transform="translate(${padding} ${statY})">
             <rect x="0" y="0" width="${statW}" height="${statH}" rx="10" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
@@ -508,7 +518,7 @@ function renderStackedLayout(data, options, theme, width, height) {
             <text x="16" y="${Math.round(statH * 0.75)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.11)}" font-weight="800">${data.players}</text>
         </g>`;
 
-    return wrapCardContent(main);
+    return wrapCardContent(main, data.targetUrl);
 }
 
 function renderCardSvg(data, options) {
@@ -531,6 +541,143 @@ function renderCardSvg(data, options) {
     ${cardContent}
 </svg>`;
 }
+
+function aggregateDeveloperLiveTotals(privatePluginUUIDs) {
+    const uniqueServers = new Map();
+
+    privatePluginUUIDs.forEach((pluginUUID) => {
+        getServersUsingPlugin(pluginUUID).forEach((server) => {
+            const serverUUID = String(server.uuid || "").trim();
+            if (!serverUUID) {
+                return;
+            }
+
+            const playersOnline = Math.max(0, Number(server.players_online) || 0);
+            const existing = uniqueServers.get(serverUUID);
+            if (!existing || playersOnline > existing.players_online) {
+                uniqueServers.set(serverUUID, {
+                    players_online: playersOnline
+                });
+            }
+        });
+    });
+
+    let totalPlayers = 0;
+    uniqueServers.forEach((server) => {
+        totalPlayers += server.players_online;
+    });
+
+    return {
+        serversCount: uniqueServers.size,
+        playersCount: totalPlayers
+    };
+}
+
+function aggregateDeveloperHistory(privatePluginUUIDs) {
+    const byHour = new Map();
+
+    privatePluginUUIDs.forEach((pluginUUID) => {
+        const historyRows = getPluginDailyStatsLastDays(pluginUUID);
+        historyRows.forEach((row) => {
+            const hourKey = String(row.hour_start || row.day || "").trim();
+            if (!hourKey) {
+                return;
+            }
+
+            const current = byHour.get(hourKey) || {
+                day: hourKey,
+                serversCount: 0,
+                playersCount: 0
+            };
+            current.serversCount += Math.max(0, Number(row.servers_count) || 0);
+            current.playersCount += Math.max(0, Number(row.players_count) || 0);
+            byHour.set(hourKey, current);
+        });
+    });
+
+    return Array.from(byHour.values())
+        .sort((a, b) => String(a.day).localeCompare(String(b.day)));
+}
+
+function buildDeveloperEmbedData(developerUUID) {
+    const account = getAccountById(developerUUID);
+    if (!account || account.is_disabled) {
+        return null;
+    }
+
+    const privatePluginUUIDs = Array.from(new Set(
+        getPluginsAccess(account.id)
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+            .filter((pluginUUID) => !!getPlugin(pluginUUID))
+    ));
+
+    const liveTotals = aggregateDeveloperLiveTotals(privatePluginUUIDs);
+    const history = aggregateDeveloperHistory(privatePluginUUIDs);
+    const historyWithFallback = history.length > 0
+        ? history
+        : [{
+            day: getUtcTodayDayString(),
+            serversCount: liveTotals.serversCount,
+            playersCount: liveTotals.playersCount
+        }];
+
+    const peakServersCount = historyWithFallback.reduce(
+        (maxValue, point) => Math.max(maxValue, point.serversCount),
+        liveTotals.serversCount
+    );
+    const peakPlayersCount = historyWithFallback.reduce(
+        (maxValue, point) => Math.max(maxValue, point.playersCount),
+        liveTotals.playersCount
+    );
+
+    return {
+        name: escapeXml(truncateText(account.username?.trim() || "No Name", 36)),
+        servers: formatNumber(liveTotals.serversCount),
+        players: formatNumber(liveTotals.playersCount),
+        allTimePeakServers: formatNumber(peakServersCount),
+        allTimePeakPlayers: formatNumber(peakPlayersCount),
+        history: historyWithFallback,
+        historySourceRows: history.length,
+        kicker: "DEVELOPER METRICS",
+        subtitle: `${formatNumber(privatePluginUUIDs.length)} mods combined`,
+        historyKicker: "DEVELOPER HISTORY (30-DAY AGGREGATE)",
+        historySubtitle: "30-day combined plugin trend (UTC). Red = servers, green = players.",
+        peakSummaryLabel: "30-day aggregate peak",
+        targetUrl: `${TARGET_URL}/developer/${encodeURIComponent(account.id)}`
+    };
+}
+
+router.get("/developer/:developer_uuid/card.svg", embedGetRateLimiter, (req, res) => {
+    const developerUUID = typeof req.params?.developer_uuid === "string"
+        ? req.params.developer_uuid.trim()
+        : "";
+    if (!developerUUID) {
+        return res.status(400).json({ error: "Invalid developer identifier" });
+    }
+
+    const options = getEmbedOptions(req.query || {});
+    const cacheKey = `developer|${developerUUID}|${options.layout}|${options.size}|${options.theme}`;
+    const cachedSvg = getCachedSvg(cacheKey);
+    if (cachedSvg) {
+        res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+        res.setHeader("X-Embed-Cache", "HIT");
+        res.send(cachedSvg);
+        return;
+    }
+
+    const data = buildDeveloperEmbedData(developerUUID);
+    if (!data) {
+        return res.status(404).json({ error: "Developer not found" });
+    }
+
+    const svg = renderCardSvg(data, options);
+    setCachedSvg(cacheKey, svg);
+
+    res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+    res.setHeader("X-Embed-Cache", "MISS");
+    res.send(svg);
+});
 
 router.get("/:mod/card.svg", embedGetRateLimiter, (req, res) => {
     const { mod } = req.params || {};

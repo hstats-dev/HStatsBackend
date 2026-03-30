@@ -13,6 +13,7 @@ db.exec(`
         name TEXT,
         github_link TEXT DEFAULT '',
         curseforge_link TEXT DEFAULT '',
+        last_private_uuid_refresh_at INTEGER DEFAULT 0,
         added_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 `);
@@ -32,9 +33,37 @@ function ensureColumn(table, column, definition) {
     }
 }
 
+function isAnyPluginUuidTaken(candidateUuid, { excludePrivateUuid = null } = {}) {
+    const normalized = typeof candidateUuid === "string" ? candidateUuid.trim() : "";
+    if (!isCanonicalUuid(normalized)) {
+        return false;
+    }
+
+    const privateMatch = db.prepare(`
+        SELECT uuid
+        FROM plugins
+        WHERE uuid = ?
+          AND (? IS NULL OR uuid <> ?)
+        LIMIT 1
+    `).get(normalized, excludePrivateUuid, excludePrivateUuid);
+
+    if (privateMatch) {
+        return true;
+    }
+
+    const publicMatch = db.prepare(`
+        SELECT uuid
+        FROM plugins
+        WHERE public_uuid = ?
+        LIMIT 1
+    `).get(normalized);
+
+    return !!publicMatch;
+}
+
 function generateUniquePublicUUID(existing = new Set()) {
     let candidate = crypto.randomUUID();
-    while (existing.has(candidate) || db.prepare("SELECT uuid FROM plugins WHERE public_uuid = ?").get(candidate)) {
+    while (existing.has(candidate) || isAnyPluginUuidTaken(candidate)) {
         candidate = crypto.randomUUID();
     }
     return candidate;
@@ -60,6 +89,7 @@ function normalizePublicUuids() {
 ensureColumn("plugins", "public_uuid", "TEXT");
 ensureColumn("plugins", "github_link", "TEXT DEFAULT ''");
 ensureColumn("plugins", "curseforge_link", "TEXT DEFAULT ''");
+ensureColumn("plugins", "last_private_uuid_refresh_at", "INTEGER DEFAULT 0");
 normalizePublicUuids();
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugins_public_uuid ON plugins(public_uuid)");
 
@@ -167,6 +197,30 @@ function setPluginLinks(privateUuid, { githubLink, curseforgeLink } = {}) {
     return getPlugin(privateUuid);
 }
 
+function rotatePluginPrivateUuid(oldPrivateUuid, newPrivateUuid, refreshedAt) {
+    const current = getPlugin(oldPrivateUuid);
+    if (!current) {
+        return null;
+    }
+
+    const normalizedNewPrivateUuid = typeof newPrivateUuid === "string" ? newPrivateUuid.trim() : "";
+    if (!isCanonicalUuid(normalizedNewPrivateUuid)) {
+        throw new Error("newPrivateUuid must be a valid UUID");
+    }
+    if (normalizedNewPrivateUuid !== oldPrivateUuid && isAnyPluginUuidTaken(normalizedNewPrivateUuid, { excludePrivateUuid: oldPrivateUuid })) {
+        throw new Error("newPrivateUuid is already taken");
+    }
+
+    const refreshTimestamp = Number.isInteger(refreshedAt) && refreshedAt >= 0 ? refreshedAt : Math.floor(Date.now() / 1000);
+    db.prepare(`
+        UPDATE plugins
+        SET uuid = ?, last_private_uuid_refresh_at = ?
+        WHERE uuid = ?
+    `).run(normalizedNewPrivateUuid, refreshTimestamp, oldPrivateUuid);
+
+    return getPlugin(normalizedNewPrivateUuid);
+}
+
 function getTotalPlugins(searchTerm = "") {
     if (searchTerm) {
         const row = db.prepare("SELECT COUNT(*) AS count FROM plugins WHERE name LIKE ?").get(`%${searchTerm}%`);
@@ -193,8 +247,10 @@ export {
     getPlugin,
     getPluginByPublicUUID,
     getPluginByAnyUUID,
+    isAnyPluginUuidTaken,
     toPublicPlugin,
     setPluginLinks,
+    rotatePluginPrivateUuid,
     getTotalPlugins,
     getListOfPlugins,
     getAllPlugins
