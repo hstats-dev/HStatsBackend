@@ -50,6 +50,11 @@ function getDatabaseSources() {
             required: true
         },
         {
+            name: "important_dates",
+            sourcePath: resolvePathFromProject(process.env.IMPORTANT_DATES_DB || "databases/important_dates.db"),
+            required: false
+        },
+        {
             name: "sessions",
             sourcePath: path.resolve(
                 process.cwd(),

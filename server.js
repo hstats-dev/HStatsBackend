@@ -23,6 +23,7 @@ import serverRoutes from "./routes/servers.js";
 import embedRoutes from "./routes/embed.js";
 import { getTotalPlugins } from "./databases/plugindb.js";
 import { getRecentActivity } from "./databases/liveActivity.js";
+import { listImportantDateMarkers } from "./databases/importantdatesdb.js";
 import { FRONTEND_URL, PORT } from "./config.js";
 import fs from 'node:fs';
 import path from 'node:path';
@@ -209,6 +210,17 @@ app.get("/api/server-data", publicGetRateLimiter, (req, res) => {
 app.get("/api/recent-activity", publicGetRateLimiter, (req, res) => {
     const recentActivity = getRecentActivity();
     res.status(200).json({ recentActivity });
+});
+
+app.get("/api/important-dates", publicGetRateLimiter, (req, res) => {
+    const limitRaw = req.query.limit;
+    const parsedLimit = limitRaw === undefined ? null : Number.parseInt(String(limitRaw), 10);
+    const limit = Number.isInteger(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, 1000)
+        : null;
+
+    const markers = listImportantDateMarkers({ limit });
+    return res.status(200).json({ markers });
 });
 
 app.get("/api/server-history", heavyGetRateLimiter, (req, res) => {
