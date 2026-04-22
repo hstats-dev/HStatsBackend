@@ -92,6 +92,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
 configDotenv();
 
 const app = express();
+const DISCORD_BOT_ENABLED = ["1", "true", "yes", "on"].includes(
+    String(process.env.DISCORD_BOT_ENABLED || "").trim().toLowerCase()
+);
 
 if (process.env.PRODUCTION === "true")
     app.set("trust proxy", 1);
@@ -264,8 +267,20 @@ if (!process.env.SERVER_ALIVE_CHECK_INTERVAL || isNaN(process.env.SERVER_ALIVE_C
     process.env.SERVER_ALIVE_CHECK_INTERVAL = "5";
 }
 
-await loadDiscordCommands();
-client.login(process.env.DISCORD_BOT_TOKEN);
+if (DISCORD_BOT_ENABLED) {
+    if (!process.env.DISCORD_BOT_TOKEN) {
+        console.warn("DISCORD_BOT_ENABLED is true, but DISCORD_BOT_TOKEN is not set. Discord bot startup skipped.");
+    } else {
+        try {
+            await loadDiscordCommands();
+            await client.login(process.env.DISCORD_BOT_TOKEN);
+        } catch (error) {
+            console.error(`Discord bot startup failed: ${error?.message || error}`);
+        }
+    }
+} else {
+    console.log("Discord bot startup skipped. Set DISCORD_BOT_ENABLED=true to enable it.");
+}
 
 // Periodically check for inactive servers, while we are at it we update player count
 // cause why not do it here!
