@@ -4,7 +4,7 @@ This document covers both public SVG embed endpoints:
 - plugin embeds
 - developer embeds
 
-Both endpoints return SVG (`image/svg+xml`), support the same layout/theme query options, always include the logo and `hstats.dev` watermark, and are always clickable.
+Both endpoints return SVG (`image/svg+xml`), support the same layout/theme/style query options, always include the logo and `hstats.dev` watermark, and are always clickable.
 
 ## Routes
 
@@ -27,10 +27,60 @@ All options are optional on both endpoints.
 
 | Option | Type | Values | Default | Notes |
 |---|---|---|---|---|
-| `theme` | string | `light`, `dark` | `light` | Visual color theme. |
+| `theme` | string | see theme values below | `light` | Visual color theme. |
 | `layout` | string | `compact`, `stacked`, `history` | `compact` | Controls structure/format. |
 | `size` | string | `sm`, `md`, `lg` | `md` | Uses per-layout size presets. |
 | `dark` | bool | `true/false`, `1/0`, `yes/no`, `on/off` | `false` | Alias toggle; if true, forces dark theme. |
+
+### Theme Values
+`theme` supports:
+
+- `light`
+- `dark`
+- `github`
+- `terminal`
+- `forest`
+- `ember`
+
+The existing `light`, `dark`, `layout`, `size`, and `dark` behavior is still supported. Existing embed URLs keep working without changes.
+
+---
+
+## Style Customization
+All style options are optional and can be mixed with any supported `theme`, `layout`, and `size`.
+
+### Fonts
+| Option | Type | Values | Default | Notes |
+|---|---|---|---|---|
+| `font` | string | `arial`, `system`, `verdana`, `georgia`, `mono` | `arial` | Uses safe local font stacks for broad SVG host compatibility. |
+
+### Background and Shape
+| Option | Type | Values | Default | Notes |
+|---|---|---|---|---|
+| `background` | string | `solid`, `transparent` | `solid` | `transparent` makes the main card background transparent. |
+| `radius` | integer | `0`-`24` | `14` | Controls outer card and inner panel corner radius. |
+| `borderWidth` | integer | `0`-`4` | `2` | Controls the outer card border width. |
+
+### Color Overrides
+Colors accept 3-digit or 6-digit hex values with or without `#`.
+
+Important: if you include `#` in a URL, encode it as `%23`, because an unencoded `#` starts the URL fragment and will not reach the server. For example, use `bg=%23111827` or `bg=111827`.
+
+| Option | Controls |
+|---|---|
+| `bg` | Main card background. Also accepts `transparent`. |
+| `backgroundColor` | Alias for `bg`. Also accepts `transparent`. |
+| `text` | Main text color. |
+| `muted` | Secondary text color. |
+| `border` | Outer card border color. |
+| `divider` | Compact layout divider color. |
+| `panel` | Stat panel background. Also accepts `transparent`. |
+| `panelBorder` | Stat/chart panel border color. |
+| `chartBg` | History chart panel background. Also accepts `transparent`. |
+| `chartGrid` | History chart grid color. |
+| `chartAxis` | History chart axis color. |
+| `serversColor` | Servers stat/history line color. Also derives servers history fill. |
+| `playersColor` | Players stat/history line color. Also derives players history fill. |
 
 ---
 
@@ -109,6 +159,7 @@ Sizes depend on `layout`:
   - `theme`
   - `layout`
   - `size`
+  - validated style overrides, when present
 - Response header `X-Embed-Cache` is set to `HIT` or `MISS`.
 
 ### Cache Env Vars
@@ -127,6 +178,12 @@ Sizes depend on `layout`:
 ### Plugin history dark large
 `/api/embed/PLUGIN_PUBLIC_UUID/card.svg?layout=history&theme=dark&size=lg`
 
+### Plugin custom colors
+`/api/embed/PLUGIN_PUBLIC_UUID/card.svg?theme=dark&bg=111827&text=f9fafb&panel=1f2937&border=374151&serversColor=f97316&playersColor=22c55e`
+
+### Plugin transparent square mono
+`/api/embed/PLUGIN_PUBLIC_UUID/card.svg?background=transparent&radius=0&borderWidth=0&font=mono`
+
 ### Developer default
 `/api/embed/developer/DEVELOPER_UUID/card.svg`
 
@@ -135,6 +192,9 @@ Sizes depend on `layout`:
 
 ### Developer history large
 `/api/embed/developer/DEVELOPER_UUID/card.svg?layout=history&size=lg`
+
+### Developer terminal history
+`/api/embed/developer/DEVELOPER_UUID/card.svg?layout=history&theme=terminal&font=mono`
 
 ---
 

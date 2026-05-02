@@ -68,8 +68,104 @@ const THEMES = {
         playersFill: "rgba(74,222,128,0.2)",
         logoFallbackBg: "#f8f9fb",
         logoFallbackText: "#101319"
+    },
+    github: {
+        bg: "#0d1117",
+        text: "#f0f6fc",
+        muted: "rgba(240,246,252,0.72)",
+        border: "#30363d",
+        divider: "rgba(240,246,252,0.18)",
+        panel: "#161b22",
+        panelBorder: "rgba(240,246,252,0.2)",
+        chartBg: "#0d1117",
+        chartGrid: "rgba(240,246,252,0.14)",
+        chartAxis: "rgba(240,246,252,0.34)",
+        serversLine: "#ff7b72",
+        serversFill: "rgba(255,123,114,0.18)",
+        playersLine: "#3fb950",
+        playersFill: "rgba(63,185,80,0.18)",
+        logoFallbackBg: "#f0f6fc",
+        logoFallbackText: "#0d1117"
+    },
+    terminal: {
+        bg: "#050807",
+        text: "#d7ffe8",
+        muted: "rgba(215,255,232,0.66)",
+        border: "#35f08a",
+        divider: "rgba(53,240,138,0.22)",
+        panel: "#08120d",
+        panelBorder: "rgba(53,240,138,0.28)",
+        chartBg: "#020403",
+        chartGrid: "rgba(53,240,138,0.16)",
+        chartAxis: "rgba(53,240,138,0.36)",
+        serversLine: "#facc15",
+        serversFill: "rgba(250,204,21,0.16)",
+        playersLine: "#35f08a",
+        playersFill: "rgba(53,240,138,0.18)",
+        logoFallbackBg: "#35f08a",
+        logoFallbackText: "#050807"
+    },
+    forest: {
+        bg: "#f7faf4",
+        text: "#172319",
+        muted: "rgba(23,35,25,0.66)",
+        border: "#49633f",
+        divider: "rgba(73,99,63,0.22)",
+        panel: "#ffffff",
+        panelBorder: "rgba(73,99,63,0.28)",
+        chartBg: "#eef5eb",
+        chartGrid: "rgba(23,35,25,0.14)",
+        chartAxis: "rgba(23,35,25,0.34)",
+        serversLine: "#b45309",
+        serversFill: "rgba(180,83,9,0.16)",
+        playersLine: "#15803d",
+        playersFill: "rgba(21,128,61,0.18)",
+        logoFallbackBg: "#172319",
+        logoFallbackText: "#ffffff"
+    },
+    ember: {
+        bg: "#180f0b",
+        text: "#fff7ed",
+        muted: "rgba(255,247,237,0.72)",
+        border: "#f97316",
+        divider: "rgba(249,115,22,0.24)",
+        panel: "#23130d",
+        panelBorder: "rgba(249,115,22,0.34)",
+        chartBg: "#1f120d",
+        chartGrid: "rgba(255,247,237,0.14)",
+        chartAxis: "rgba(255,247,237,0.34)",
+        serversLine: "#fb7185",
+        serversFill: "rgba(251,113,133,0.2)",
+        playersLine: "#facc15",
+        playersFill: "rgba(250,204,21,0.18)",
+        logoFallbackBg: "#fff7ed",
+        logoFallbackText: "#180f0b"
     }
 };
+
+const FONT_FAMILIES = {
+    arial: "Arial, sans-serif",
+    system: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+    verdana: "Verdana, Geneva, sans-serif",
+    georgia: "Georgia, serif",
+    mono: "ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace"
+};
+
+const COLOR_OPTION_MAP = [
+    { query: "bg", themeKey: "bg", allowTransparent: true },
+    { query: "backgroundColor", themeKey: "bg", allowTransparent: true },
+    { query: "text", themeKey: "text" },
+    { query: "muted", themeKey: "muted" },
+    { query: "border", themeKey: "border" },
+    { query: "divider", themeKey: "divider" },
+    { query: "panel", themeKey: "panel", allowTransparent: true },
+    { query: "panelBorder", themeKey: "panelBorder" },
+    { query: "chartBg", themeKey: "chartBg", allowTransparent: true },
+    { query: "chartGrid", themeKey: "chartGrid" },
+    { query: "chartAxis", themeKey: "chartAxis" },
+    { query: "serversColor", themeKey: "serversLine", fillKey: "serversFill", fillAlpha: 0.18 },
+    { query: "playersColor", themeKey: "playersLine", fillKey: "playersFill", fillAlpha: 0.18 }
+];
 
 function parsePositiveIntEnv(name, fallback) {
     const raw = process.env[name];
@@ -178,20 +274,144 @@ function parseEnum(value, allowed, fallback) {
     return allowed.includes(normalized) ? normalized : fallback;
 }
 
+function getFirstQueryValue(value) {
+    if (Array.isArray(value)) {
+        return value[0];
+    }
+    return value;
+}
+
+function hasQueryValue(value) {
+    const raw = getFirstQueryValue(value);
+    return raw !== undefined && raw !== null && String(raw).trim() !== "";
+}
+
+function parseSvgColor(value, { allowTransparent = false } = {}) {
+    const rawValue = getFirstQueryValue(value);
+    if (rawValue === undefined || rawValue === null || rawValue === "") {
+        return null;
+    }
+
+    const raw = String(rawValue).trim();
+    if (allowTransparent && raw.toLowerCase() === "transparent") {
+        return "transparent";
+    }
+
+    const normalized = raw.startsWith("#") ? raw.slice(1) : raw;
+    if (/^[0-9a-fA-F]{3}$/.test(normalized)) {
+        return `#${normalized.split("").map((char) => char + char).join("").toLowerCase()}`;
+    }
+    if (/^[0-9a-fA-F]{6}$/.test(normalized)) {
+        return `#${normalized.toLowerCase()}`;
+    }
+    return null;
+}
+
+function hexToRgba(hexColor, alpha) {
+    const normalized = parseSvgColor(hexColor);
+    if (!normalized) {
+        return null;
+    }
+
+    const hex = normalized.slice(1);
+    const r = Number.parseInt(hex.slice(0, 2), 16);
+    const g = Number.parseInt(hex.slice(2, 4), 16);
+    const b = Number.parseInt(hex.slice(4, 6), 16);
+    return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function parseIntegerRange(value, min, max) {
+    if (!hasQueryValue(value)) {
+        return null;
+    }
+
+    const parsed = Number.parseInt(String(getFirstQueryValue(value)).trim(), 10);
+    if (!Number.isInteger(parsed)) {
+        return null;
+    }
+    return Math.min(max, Math.max(min, parsed));
+}
+
 function getEmbedOptions(query = {}) {
     const layout = parseEnum(query.layout, ["compact", "stacked", "history"], "compact");
     const size = parseEnum(query.size, ["sm", "md", "lg"], "md");
 
-    let theme = parseEnum(query.theme, ["light", "dark"], "light");
+    let theme = parseEnum(query.theme, Object.keys(THEMES), "light");
     if (parseBool(query.dark, false)) {
         theme = "dark";
     }
 
+    const font = parseEnum(query.font, Object.keys(FONT_FAMILIES), "arial");
+    const background = parseEnum(query.background, ["solid", "transparent"], "solid");
+    const radius = parseIntegerRange(query.radius, 0, 24);
+    const borderWidth = parseIntegerRange(query.borderWidth, 0, 4);
+    const colorOverrides = {};
+    const styleKeyParts = [];
+
+    if (hasQueryValue(query.font) && font !== "arial") {
+        styleKeyParts.push(`font:${font}`);
+    }
+    if (background === "transparent") {
+        styleKeyParts.push("background:transparent");
+    }
+    if (radius !== null) {
+        styleKeyParts.push(`radius:${radius}`);
+    }
+    if (borderWidth !== null) {
+        styleKeyParts.push(`borderWidth:${borderWidth}`);
+    }
+
+    COLOR_OPTION_MAP.forEach((option) => {
+        const parsedColor = parseSvgColor(query[option.query], { allowTransparent: option.allowTransparent });
+        if (!parsedColor) {
+            return;
+        }
+        colorOverrides[option.themeKey] = parsedColor;
+        styleKeyParts.push(`${option.query}:${parsedColor}`);
+        if (option.fillKey && parsedColor !== "transparent") {
+            const fillColor = hexToRgba(parsedColor, option.fillAlpha);
+            if (fillColor) {
+                colorOverrides[option.fillKey] = fillColor;
+            }
+        }
+    });
+
     return {
         layout,
         size,
-        theme
+        theme,
+        font,
+        background,
+        radius,
+        borderWidth,
+        colorOverrides,
+        styleKey: styleKeyParts.join("|")
     };
+}
+
+function resolveCardTheme(options) {
+    const theme = {
+        ...THEMES[options.theme],
+        ...options.colorOverrides
+    };
+
+    if (options.background === "transparent") {
+        theme.bg = "transparent";
+    }
+
+    const customRadius = options.radius !== null;
+    theme.fontFamily = FONT_FAMILIES[options.font] || FONT_FAMILIES.arial;
+    theme.cardRadius = customRadius ? options.radius : 14;
+    theme.compactPanelRadius = customRadius ? Math.max(0, Math.min(20, options.radius)) : 8;
+    theme.stackedPanelRadius = customRadius ? Math.max(0, Math.min(20, options.radius)) : 10;
+    theme.chartPanelRadius = customRadius ? Math.max(0, Math.min(20, options.radius)) : 10;
+    theme.borderWidth = options.borderWidth !== null ? options.borderWidth : 2;
+
+    return theme;
+}
+
+function buildEmbedCacheKey(...parts) {
+    return parts.filter((part) => part !== undefined && part !== null && part !== "").join("|");
 }
 
 function renderLogo({ x, y, size, theme }) {
@@ -203,7 +423,7 @@ function renderLogo({ x, y, size, theme }) {
     const textY = y + (size * 0.62);
     return `
         <rect x="${x}" y="${y}" width="${size}" height="${size}" rx="${Math.round(size * 0.16)}" fill="${theme.logoFallbackBg}"/>
-        <text x="${textX}" y="${textY}" fill="${theme.logoFallbackText}" font-family="Arial, sans-serif" font-size="${Math.round(size * 0.38)}" font-weight="700" text-anchor="middle">H</text>
+        <text x="${textX}" y="${textY}" fill="${theme.logoFallbackText}" font-family="${theme.fontFamily}" font-size="${Math.round(size * 0.38)}" font-weight="700" text-anchor="middle">H</text>
     `;
 }
 
@@ -327,28 +547,28 @@ function renderCompactLayout(data, options, theme, width, height) {
 
     const logoBlock = `
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.14)}" fill="${theme.text}" fill-opacity="0.88" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.09)}" font-weight="800" text-anchor="middle">hstats.dev</text>
-        <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.24)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="600" text-anchor="middle">Live Plugin Stats</text>`;
+        <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.14)}" fill="${theme.text}" fill-opacity="0.88" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.09)}" font-weight="800" text-anchor="middle">hstats.dev</text>
+        <text x="${watermarkX}" y="${logoY + logoSize + Math.round(height * 0.24)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.06)}" font-weight="600" text-anchor="middle">Live Plugin Stats</text>`;
 
     const main = `
-        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
+        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="${theme.cardRadius}" fill="${theme.bg}" stroke="${theme.border}" stroke-width="${theme.borderWidth}"/>
         <line x1="${padding + leftColWidth}" y1="${Math.round(height * 0.08)}" x2="${padding + leftColWidth}" y2="${Math.round(height * 0.92)}" stroke="${theme.divider}"/>
         ${logoBlock}
 
-        <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
-        <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
-        ${subtitleText ? `<text x="${contentX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="600">${subtitleText}</text>` : ""}
+        <text x="${contentX}" y="${titleY}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.07)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
+        <text x="${contentX}" y="${nameY}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
+        ${subtitleText ? `<text x="${contentX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.06)}" font-weight="600">${subtitleText}</text>` : ""}
 
         <g transform="translate(${contentX} ${statsY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="14" y="${Math.round(statH * 0.37)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.6">SERVERS</text>
-            <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.servers}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.compactPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="14" y="${Math.round(statH * 0.37)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.6">SERVERS</text>
+            <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.servers}</text>
         </g>
 
         <g transform="translate(${contentX + statW + gap} ${statsY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="14" y="${Math.round(statH * 0.37)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.6">PLAYERS</text>
-            <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.players}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.compactPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="14" y="${Math.round(statH * 0.37)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.6">PLAYERS</text>
+            <text x="14" y="${Math.round(statH * 0.78)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.12)}" font-weight="800">${data.players}</text>
         </g>`;
 
     return wrapCardContent(main, data.targetUrl);
@@ -404,7 +624,14 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const latestServersPoint = serversSeries.points[serversSeries.points.length - 1];
     const latestPlayersPoint = playersSeries.points[playersSeries.points.length - 1];
     const kickerText = escapeXml(data.historyKicker || "PLUGIN HISTORY (HOURLY PEAKS)");
-    const subtitleText = escapeXml(data.historySubtitle || "30-day hourly trend (UTC). Red = servers, green = players.");
+    const isLegacyColorSubtitle = ["light", "dark"].includes(options.theme) && !options.styleKey;
+    const defaultSubtitle = isLegacyColorSubtitle
+        ? "30-day hourly trend (UTC). Red = servers, green = players."
+        : "30-day hourly trend (UTC). Servers and players shown below.";
+    const rawSubtitle = data.historySubtitle || defaultSubtitle;
+    const subtitleText = escapeXml(isLegacyColorSubtitle
+        ? rawSubtitle
+        : rawSubtitle.replace("Red = servers, green = players.", "Servers and players shown below."));
     const peakSummaryLabel = escapeXml(data.peakSummaryLabel || "All-time");
 
     const gridLines = [0, 1, 2, 3].map((index) => {
@@ -413,7 +640,7 @@ function renderHistoryLayout(data, options, theme, width, height) {
         const value = Math.round(yMax * (1 - ratio));
         return `
             <line x1="${plotX}" y1="${y.toFixed(2)}" x2="${(plotX + plotW).toFixed(2)}" y2="${y.toFixed(2)}" stroke="${theme.chartGrid}" />
-            <text x="${(plotX - 8).toFixed(2)}" y="${(y + 4).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${formatNumber(value)}</text>
+            <text x="${(plotX - 8).toFixed(2)}" y="${(y + 4).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.036)}">${formatNumber(value)}</text>
         `;
     }).join("");
 
@@ -421,33 +648,33 @@ function renderHistoryLayout(data, options, theme, width, height) {
     const lastDay = historyPoints.length > 0 ? formatDayLabel(historyPoints[historyPoints.length - 1].day) : formatDayLabel(getUtcTodayDayString());
 
     const noDataText = data.historySourceRows === 0
-        ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No history yet. Showing current snapshot.</text>`
+        ? `<text x="${(plotX + (plotW / 2)).toFixed(2)}" y="${(plotY + (plotH / 2)).toFixed(2)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.045)}" text-anchor="middle">No history yet. Showing current snapshot.</text>`
         : "";
 
     const allTimePeakText = `${peakSummaryLabel}: ${data.allTimePeakServers} servers | ${data.allTimePeakPlayers} players`;
 
     const main = `
-        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
+        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="${theme.cardRadius}" fill="${theme.bg}" stroke="${theme.border}" stroke-width="${theme.borderWidth}"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
-        <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
-        <text x="${titleX}" y="${subtitleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}" font-weight="600">${subtitleText}</text>
-        <text x="${titleX}" y="${subtitleY2}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="600">${allTimePeakText}</text>
-        <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
+        <text x="${titleX}" y="${titleY}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.036)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
+        <text x="${titleX}" y="${nameY}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.075)}" font-weight="800">${data.name}</text>
+        <text x="${titleX}" y="${subtitleY}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.036)}" font-weight="600">${subtitleText}</text>
+        <text x="${titleX}" y="${subtitleY2}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.034)}" font-weight="600">${allTimePeakText}</text>
+        <text x="${width - padding}" y="${padding + Math.round(height * 0.055)}" text-anchor="end" fill="${theme.text}" fill-opacity="0.86" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.05)}" font-weight="800">hstats.dev</text>
 
         <g transform="translate(${statsX2} ${statsY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.035)}" font-weight="700">SERVERS</text>
-            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.servers}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.compactPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.035)}" font-weight="700">SERVERS</text>
+            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.servers}</text>
         </g>
         <g transform="translate(${statsX} ${statsY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="8" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.035)}" font-weight="700">PLAYERS</text>
-            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.players}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.compactPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="10" y="${Math.round(statH * 0.34)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.035)}" font-weight="700">PLAYERS</text>
+            <text x="10" y="${Math.round(statH * 0.73)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.058)}" font-weight="800">${data.players}</text>
         </g>
 
         <g>
-            <rect x="${chartPanelX}" y="${chartPanelY}" width="${chartPanelW}" height="${chartPanelH}" rx="10" fill="${theme.chartBg}" stroke="${theme.panelBorder}" />
+            <rect x="${chartPanelX}" y="${chartPanelY}" width="${chartPanelW}" height="${chartPanelH}" rx="${theme.chartPanelRadius}" fill="${theme.chartBg}" stroke="${theme.panelBorder}" />
             ${gridLines}
             <line x1="${plotX}" y1="${(plotY + plotH).toFixed(2)}" x2="${(plotX + plotW).toFixed(2)}" y2="${(plotY + plotH).toFixed(2)}" stroke="${theme.chartAxis}" />
             <path d="${serversSeries.areaPath}" fill="${theme.serversFill}" />
@@ -456,15 +683,15 @@ function renderHistoryLayout(data, options, theme, width, height) {
             <path d="${playersSeries.linePath}" fill="none" stroke="${theme.playersLine}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
             ${latestServersPoint ? `<circle cx="${latestServersPoint.x.toFixed(2)}" cy="${latestServersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.serversLine}"/>` : ""}
             ${latestPlayersPoint ? `<circle cx="${latestPlayersPoint.x.toFixed(2)}" cy="${latestPlayersPoint.y.toFixed(2)}" r="${Math.max(2, Math.round(height * 0.008))}" fill="${theme.playersLine}"/>` : ""}
-            <text x="${plotX}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${firstDay}</text>
-            <text x="${(plotX + plotW).toFixed(2)}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.036)}">${lastDay} UTC</text>
+            <text x="${plotX}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.036)}">${firstDay}</text>
+            <text x="${(plotX + plotW).toFixed(2)}" y="${(plotY + plotH + Math.round(height * 0.085)).toFixed(2)}" text-anchor="end" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.036)}">${lastDay} UTC</text>
             <g transform="translate(${plotX} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
                 <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.serversLine}" />
-                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.serversLine}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="700">Servers: now ${formatNumber(latestServers)}, peak ${formatNumber(peakServers)}</text>
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.serversLine}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.034)}" font-weight="700">Servers: now ${formatNumber(latestServers)}, peak ${formatNumber(peakServers)}</text>
             </g>
             <g transform="translate(${plotX + Math.round(width * 0.39)} ${chartPanelY + Math.round(chartPanelH * 0.08)})">
                 <circle cx="0" cy="0" r="${Math.max(2, Math.round(height * 0.007))}" fill="${theme.playersLine}" />
-                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.playersLine}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.034)}" font-weight="700">Players: now ${formatNumber(latestPlayers)}, peak ${formatNumber(peakPlayers)}</text>
+                <text x="${Math.round(width * 0.012)}" y="${Math.round(height * 0.012)}" fill="${theme.playersLine}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.034)}" font-weight="700">Players: now ${formatNumber(latestPlayers)}, peak ${formatNumber(peakPlayers)}</text>
             </g>
             ${noDataText}
         </g>
@@ -498,24 +725,24 @@ function renderStackedLayout(data, options, theme, width, height) {
     const subtitleText = escapeXml(data.subtitle || "");
 
     const main = `
-        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="14" fill="${theme.bg}" stroke="${theme.border}" stroke-width="2"/>
+        <rect x="1" y="1" width="${width - 2}" height="${height - 2}" rx="${theme.cardRadius}" fill="${theme.bg}" stroke="${theme.border}" stroke-width="${theme.borderWidth}"/>
         ${renderLogo({ x: logoX, y: logoY, size: logoSize, theme })}
-        <text x="${watermarkX}" y="${watermarkY}" fill="${theme.text}" fill-opacity="0.85" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.08)}" font-weight="800" text-anchor="end">hstats.dev</text>
+        <text x="${watermarkX}" y="${watermarkY}" fill="${theme.text}" fill-opacity="0.85" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.08)}" font-weight="800" text-anchor="end">hstats.dev</text>
 
-        <text x="${headerX}" y="${titleY}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
-        <text x="${headerX}" y="${nameY}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
-        ${subtitleText ? `<text x="${headerX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.055)}" font-weight="600">${subtitleText}</text>` : ""}
+        <text x="${headerX}" y="${titleY}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.06)}" font-weight="700" letter-spacing="0.8">${kickerText}</text>
+        <text x="${headerX}" y="${nameY}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${nameFontSize}" font-weight="800">${data.name}</text>
+        ${subtitleText ? `<text x="${headerX}" y="${nameY + Math.round(height * 0.11)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.055)}" font-weight="600">${subtitleText}</text>` : ""}
 
         <g transform="translate(${padding} ${statY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="10" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="16" y="${Math.round(statH * 0.36)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.055)}" font-weight="700">SERVERS</text>
-            <text x="16" y="${Math.round(statH * 0.75)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.11)}" font-weight="800">${data.servers}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.stackedPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="16" y="${Math.round(statH * 0.36)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.055)}" font-weight="700">SERVERS</text>
+            <text x="16" y="${Math.round(statH * 0.75)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.11)}" font-weight="800">${data.servers}</text>
         </g>
 
         <g transform="translate(${padding + statW + gap} ${statY})">
-            <rect x="0" y="0" width="${statW}" height="${statH}" rx="10" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
-            <text x="16" y="${Math.round(statH * 0.36)}" fill="${theme.muted}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.055)}" font-weight="700">PLAYERS</text>
-            <text x="16" y="${Math.round(statH * 0.75)}" fill="${theme.text}" font-family="Arial, sans-serif" font-size="${Math.round(height * 0.11)}" font-weight="800">${data.players}</text>
+            <rect x="0" y="0" width="${statW}" height="${statH}" rx="${theme.stackedPanelRadius}" fill="${theme.panel}" stroke="${theme.panelBorder}"/>
+            <text x="16" y="${Math.round(statH * 0.36)}" fill="${theme.muted}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.055)}" font-weight="700">PLAYERS</text>
+            <text x="16" y="${Math.round(statH * 0.75)}" fill="${theme.text}" font-family="${theme.fontFamily}" font-size="${Math.round(height * 0.11)}" font-weight="800">${data.players}</text>
         </g>`;
 
     return wrapCardContent(main, data.targetUrl);
@@ -525,7 +752,7 @@ function renderCardSvg(data, options) {
     const dims = LAYOUT_SIZE_PRESETS[options.layout][options.size];
     const width = dims.width;
     const height = dims.height;
-    const theme = THEMES[options.theme];
+    const theme = resolveCardTheme(options);
 
     let cardContent;
     if (options.layout === "stacked") {
@@ -657,7 +884,7 @@ router.get("/developer/:developer_uuid/card.svg", embedGetRateLimiter, (req, res
     }
 
     const options = getEmbedOptions(req.query || {});
-    const cacheKey = `developer|${developerUUID}|${options.layout}|${options.size}|${options.theme}`;
+    const cacheKey = buildEmbedCacheKey("developer", developerUUID, options.layout, options.size, options.theme, options.styleKey);
     const cachedSvg = getCachedSvg(cacheKey);
     if (cachedSvg) {
         res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
@@ -688,7 +915,7 @@ router.get("/:mod/card.svg", embedGetRateLimiter, (req, res) => {
     const options = getEmbedOptions(req.query || {});
 
     const modId = mod.trim();
-    const cacheKey = `${modId}|${options.layout}|${options.size}|${options.theme}`;
+    const cacheKey = buildEmbedCacheKey(modId, options.layout, options.size, options.theme, options.styleKey);
     const cachedSvg = getCachedSvg(cacheKey);
     if (cachedSvg) {
         res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
