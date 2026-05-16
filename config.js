@@ -3,7 +3,7 @@
     * Configuration Constants
 */
 export const MAX_PLAYERS_ONLINE_PER_SERVER = 500; // how many players can be on a server
-export const MAX_PLUGINS_PER_USER = 10; // how many plugins can a user have access to (either owned or shared), this is to prevent abuse of the plugin system and database
+export const MAX_PLUGINS_PER_USER = 50; // how many plugins can a user have access to (either owned or shared), this is to prevent abuse of the plugin system and database
 export const PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS = 24 * 60 * 60; // private plugin UUID can only be rotated once during this cooldown window
 export const SECURITY_ALERT_DEDUPE_MS = 5 * 60 * 1000; // suppress repeated alerts with the same key during this window
 
