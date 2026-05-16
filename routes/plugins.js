@@ -13,9 +13,11 @@ import {
     isAnyPluginUuidTaken,
     rotatePluginPrivateUuid,
     setPluginLinks,
+    setPluginVisibility,
     toPublicPlugin
 } from '../databases/plugindb.js';
 import requireSession from '../middleware/requireSession.js';
+import optionalSession from '../middleware/optionalSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess, removePluginFromAllAccounts, replacePluginAccessUuid } from '../databases/accountsdb.js';
 import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays, replacePluginStatsUuid } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
@@ -114,12 +116,23 @@ function generateUniquePrivatePluginUUID() {
     return privatePluginUUID;
 }
 
+function canViewerSeePlugin(plugin, viewerPrivatePluginAccess = []) {
+    const isUnlisted = Number(plugin?.is_unlisted) === 1;
+    return !isUnlisted || viewerPrivatePluginAccess.includes(plugin.uuid);
+}
+
 // Endpoint when a user adds a new plugin to the database
 router.post("/add-plugin", requireSession, (req, res) => {
     const { name } = req.body;
+    const initialIsUnlisted = req.body?.is_unlisted === undefined
+        ? false
+        : req.body.is_unlisted;
 
     if (typeof name !== "string" || !name.trim()) {
         return res.status(400).json({ error: "Missing name field" });
+    }
+    if (typeof initialIsUnlisted !== "boolean") {
+        return res.status(400).json({ error: "is_unlisted must be a boolean" });
     }
 
     const pluginName = name.trim();
@@ -152,6 +165,9 @@ router.post("/add-plugin", requireSession, (req, res) => {
     const privatePluginUUID = generateUniquePrivatePluginUUID();
 
     addOrUpdatePlugin(privatePluginUUID, pluginName);
+    if (initialIsUnlisted) {
+        setPluginVisibility(privatePluginUUID, true);
+    }
     const createdPlugin = getPlugin(privatePluginUUID);
     const publicPlugin = toPublicPlugin(createdPlugin, { includePrivate: true });
     if (!publicPlugin) {
@@ -163,7 +179,8 @@ router.post("/add-plugin", requireSession, (req, res) => {
     });
     res.status(201).json({
         plugin_uuid: publicPlugin.uuid,
-        private_plugin_uuid: publicPlugin.private_uuid
+        private_plugin_uuid: publicPlugin.private_uuid,
+        is_unlisted: publicPlugin.is_unlisted
     });
 });
 
@@ -318,11 +335,50 @@ router.post("/apply-plugin-links", requireSession, (req, res) => {
     });
 });
 
-router.get("/list-plugins", heavyGetRateLimiter, (req, res) => {
+router.post("/apply-plugin-visibility", requireSession, (req, res) => {
+    const inputUuid = typeof req.body?.plugin_uuid === "string" ? req.body.plugin_uuid.trim() : "";
+    if (!inputUuid) {
+        return res.status(400).json({ error: "Missing plugin_uuid field" });
+    }
+
+    if (typeof req.body?.is_unlisted !== "boolean") {
+        return res.status(400).json({ error: "is_unlisted must be a boolean" });
+    }
+
+    const plugin = getPluginByAnyUUID(inputUuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const pluginAccess = getPluginsAccess(req.account.id);
+    if (!pluginAccess.includes(plugin.uuid)) {
+        return res.status(403).json({ error: "Cannot edit visibility for a plugin you do not have access to" });
+    }
+
+    const updatedPlugin = setPluginVisibility(plugin.uuid, req.body.is_unlisted);
+    if (!updatedPlugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const publicPlugin = toPublicPlugin(updatedPlugin);
+    return res.json({
+        status: "success",
+        plugin_uuid: publicPlugin.uuid,
+        is_unlisted: publicPlugin.is_unlisted
+    });
+});
+
+router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => {
     const searchTerm = typeof req.query.search === "string" ? req.query.search : "";
     const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 51, 51));
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
-    const allPlugins = getAllPlugins(searchTerm);
+    const viewerPrivatePluginAccess = req.account
+        ? getPluginsAccess(req.account.id)
+            .map((value) => String(value || "").trim())
+            .filter(Boolean)
+        : [];
+    const allPlugins = getAllPlugins(searchTerm)
+        .filter((plugin) => canViewerSeePlugin(plugin, viewerPrivatePluginAccess));
 
     const pluginRows = allPlugins.map((plugin) => {
         const serversUsing = getServersUsingPlugin(plugin.uuid);
@@ -481,6 +537,7 @@ router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
     res.status(200).json({
         uuid: publicPlugin.uuid,
         name: plugin.name,
+        is_unlisted: publicPlugin.is_unlisted,
         links: {
             github_link: publicPlugin.github_link || "",
             curseforge_link: publicPlugin.curseforge_link || ""

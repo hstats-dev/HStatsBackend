@@ -13,6 +13,7 @@ db.exec(`
         name TEXT,
         github_link TEXT DEFAULT '',
         curseforge_link TEXT DEFAULT '',
+        is_unlisted INTEGER DEFAULT 0,
         last_private_uuid_refresh_at INTEGER DEFAULT 0,
         added_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
@@ -89,6 +90,7 @@ function normalizePublicUuids() {
 ensureColumn("plugins", "public_uuid", "TEXT");
 ensureColumn("plugins", "github_link", "TEXT DEFAULT ''");
 ensureColumn("plugins", "curseforge_link", "TEXT DEFAULT ''");
+ensureColumn("plugins", "is_unlisted", "INTEGER DEFAULT 0");
 ensureColumn("plugins", "last_private_uuid_refresh_at", "INTEGER DEFAULT 0");
 normalizePublicUuids();
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_plugins_public_uuid ON plugins(public_uuid)");
@@ -167,6 +169,7 @@ function toPublicPlugin(pluginRow, { includePrivate = false } = {}) {
         ...pluginRow,
         uuid: publicUuid,
         public_uuid: publicUuid,
+        is_unlisted: Number(pluginRow.is_unlisted) === 1,
         github_link: pluginRow.github_link || "",
         curseforge_link: pluginRow.curseforge_link || ""
     };
@@ -193,6 +196,18 @@ function setPluginLinks(privateUuid, { githubLink, curseforgeLink } = {}) {
 
     db.prepare("UPDATE plugins SET github_link = ?, curseforge_link = ? WHERE uuid = ?")
         .run(nextGithub, nextCurseforge, privateUuid);
+
+    return getPlugin(privateUuid);
+}
+
+function setPluginVisibility(privateUuid, isUnlisted) {
+    const current = getPlugin(privateUuid);
+    if (!current) {
+        return null;
+    }
+
+    db.prepare("UPDATE plugins SET is_unlisted = ? WHERE uuid = ?")
+        .run(isUnlisted ? 1 : 0, privateUuid);
 
     return getPlugin(privateUuid);
 }
@@ -250,6 +265,7 @@ export {
     isAnyPluginUuidTaken,
     toPublicPlugin,
     setPluginLinks,
+    setPluginVisibility,
     rotatePluginPrivateUuid,
     getTotalPlugins,
     getListOfPlugins,

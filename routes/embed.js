@@ -836,7 +836,10 @@ function buildDeveloperEmbedData(developerUUID) {
         getPluginsAccess(account.id)
             .map((value) => String(value || "").trim())
             .filter(Boolean)
-            .filter((pluginUUID) => !!getPlugin(pluginUUID))
+            .filter((pluginUUID) => {
+                const plugin = getPlugin(pluginUUID);
+                return plugin && Number(plugin.is_unlisted) !== 1;
+            })
     ));
 
     const liveTotals = aggregateDeveloperLiveTotals(privatePluginUUIDs);

@@ -25,6 +25,7 @@ import {
 import { getPlugin, getPluginByPublicUUID, toPublicPlugin } from "../databases/plugindb.js";
 import { getServersUsingPlugin } from "../databases/serversdb.js";
 import requireSession from "../middleware/requireSession.js";
+import optionalSession from "../middleware/optionalSession.js";
 import { authRateLimiter, publicGetRateLimiter } from "../middleware/rateLimiters.js";
 import { EMAIL_MAX_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../config.js";
 
@@ -84,7 +85,7 @@ function isCanonicalUuid(value) {
     return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
 }
 
-function getManagedPluginSummaries(accountId) {
+function getManagedPluginSummaries(accountId, { includeUnlisted = false } = {}) {
     const pluginIds = getPluginsAccess(accountId)
         .map((value) => String(value || "").trim())
         .filter(Boolean);
@@ -95,6 +96,9 @@ function getManagedPluginSummaries(accountId) {
         if (!plugin) {
             return null;
         }
+        if (!includeUnlisted && Number(plugin.is_unlisted) === 1) {
+            return null;
+        }
         const publicPlugin = toPublicPlugin(plugin);
         const serversUsing = getServersUsingPlugin(pluginUUID);
         const totalPlayers = serversUsing.reduce((sum, server) => sum + (Number(server.players_online) || 0), 0);
@@ -102,6 +106,7 @@ function getManagedPluginSummaries(accountId) {
         return {
             uuid: publicPlugin.uuid,
             name: plugin.name || "Unknown Plugin",
+            is_unlisted: publicPlugin.is_unlisted,
             added_on: plugin.added_on || null,
             links: {
                 github_link: plugin.github_link || "",
@@ -558,7 +563,7 @@ router.get("/get-plugin-ownership/:plugin_uuid", publicGetRateLimiter, (req, res
     res.json({ account: toPublicAccount(account) });
 });
 
-router.get("/developer/:developer_uuid", publicGetRateLimiter, (req, res) => {
+router.get("/developer/:developer_uuid", optionalSession, publicGetRateLimiter, (req, res) => {
     const developerUUID = typeof req.params?.developer_uuid === "string"
         ? req.params.developer_uuid.trim()
         : "";
@@ -571,7 +576,10 @@ router.get("/developer/:developer_uuid", publicGetRateLimiter, (req, res) => {
         return res.status(404).json({ error: "Developer not found" });
     }
 
-    const modsManaged = getManagedPluginSummaries(account.id);
+    const viewerOwnsProfile = req.account?.id === account.id;
+    const modsManaged = getManagedPluginSummaries(account.id, {
+        includeUnlisted: viewerOwnsProfile
+    });
     return res.status(200).json({
         developer: {
             id: account.id,
