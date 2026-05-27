@@ -43,7 +43,7 @@ export const SERVER_PLAYER_SPIKE_PER_MINUTE = 100;
 export const VALID_OS_NAMES = ["Windows 10", "Windows 11", "Windows 95", "Windows 98", "Windows ME", "Windows NT", "Windows 2000", "Windows XP", "Windows 2003", "Windows CE", "Windows Vista", "Windows 7", "Windows 8", "Windows 8.1", "Linux", "macOS"];
 export const VALID_JAVA_VERSIONS = ["8", "11", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25"];
 export const AMOUNT_NEEDED_TO_DISPLAY = 5; // amount of "unique" of either OS name or Java version needed to be categorized outside of "other" and in its own
-export const PLUGIN_HISTORY_DAYS = 30; // keep and return plugin usage history for the last 30 days
+export const PLUGIN_HISTORY_DAYS = 365 * 5; // keep and return plugin usage history for the last 5 years
 export const PLUGIN_HISTORY_SPIKE_MULTIPLIER = 8; // value must be >= this multiple of both neighboring hours to be considered a spike
 export const PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER = 1.6; // secondary smoother for post-clamp spikes that still sit far above both neighboring hours
 export const PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA = 750; // minimum absolute players gap from neighbor average before smoothing

@@ -200,6 +200,18 @@ function setPluginLinks(privateUuid, { githubLink, curseforgeLink } = {}) {
     return getPlugin(privateUuid);
 }
 
+function setPluginName(privateUuid, name) {
+    const current = getPlugin(privateUuid);
+    if (!current) {
+        return null;
+    }
+
+    db.prepare("UPDATE plugins SET name = ? WHERE uuid = ?")
+        .run(name, privateUuid);
+
+    return getPlugin(privateUuid);
+}
+
 function setPluginVisibility(privateUuid, isUnlisted) {
     const current = getPlugin(privateUuid);
     if (!current) {
@@ -265,6 +277,7 @@ export {
     isAnyPluginUuidTaken,
     toPublicPlugin,
     setPluginLinks,
+    setPluginName,
     setPluginVisibility,
     rotatePluginPrivateUuid,
     getTotalPlugins,

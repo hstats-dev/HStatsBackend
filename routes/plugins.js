@@ -13,6 +13,7 @@ import {
     isAnyPluginUuidTaken,
     rotatePluginPrivateUuid,
     setPluginLinks,
+    setPluginName,
     setPluginVisibility,
     toPublicPlugin
 } from '../databases/plugindb.js';
@@ -26,6 +27,106 @@ import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
+const PLUGIN_NAME_MAX_LENGTH = 32;
+const LIST_PLUGIN_SORTS = new Set(["popular", "players", "newest", "name"]);
+const LIST_PLUGIN_LINK_FILTERS = new Set(["any", "with_any", "github", "curseforge", "none"]);
+
+function validatePluginName(name) {
+    if (typeof name !== "string" || !name.trim()) {
+        return { ok: false, error: "Missing name field" };
+    }
+
+    const pluginName = name.trim();
+    if (pluginName.length > PLUGIN_NAME_MAX_LENGTH) {
+        return {
+            ok: false,
+            status: 400,
+            error: "Plugin name must be 32 characters or fewer",
+            error_code: "name_too_long",
+            field: "name",
+            max_length: PLUGIN_NAME_MAX_LENGTH
+        };
+    }
+    if (badwords.check(pluginName)) {
+        return {
+            ok: false,
+            status: 400,
+            error: "Plugin name contains inappropriate language",
+            error_code: "inappropriate_language",
+            field: "name"
+        };
+    }
+
+    return { ok: true, name: pluginName };
+}
+
+function parseNonNegativeIntegerQuery(value, field) {
+    if (value === undefined) {
+        return { ok: true, value: null };
+    }
+
+    const normalized = String(value).trim();
+    if (!/^\d+$/.test(normalized)) {
+        return { ok: false, error: `${field} must be a non-negative integer` };
+    }
+    const parsed = Number.parseInt(normalized, 10);
+    if (!Number.isInteger(parsed) || parsed < 0) {
+        return { ok: false, error: `${field} must be a non-negative integer` };
+    }
+
+    return { ok: true, value: parsed };
+}
+
+function parseListPluginFilters(query = {}) {
+    const sort = typeof query.sort === "string" ? query.sort : "popular";
+    const links = typeof query.links === "string" ? query.links : "any";
+    const developerUuid = typeof query.developer_uuid === "string" ? query.developer_uuid.trim() : "";
+    const minServers = parseNonNegativeIntegerQuery(query.min_servers, "min_servers");
+    const maxServers = parseNonNegativeIntegerQuery(query.max_servers, "max_servers");
+    const minPlayers = parseNonNegativeIntegerQuery(query.min_players, "min_players");
+    const maxPlayers = parseNonNegativeIntegerQuery(query.max_players, "max_players");
+
+    if (!LIST_PLUGIN_SORTS.has(sort)) {
+        return { ok: false, error: "sort must be one of: popular, players, newest, name" };
+    }
+    if (!LIST_PLUGIN_LINK_FILTERS.has(links)) {
+        return { ok: false, error: "links must be one of: any, with_any, github, curseforge, none" };
+    }
+
+    const invalidRange = [minServers, maxServers, minPlayers, maxPlayers].find((result) => !result.ok);
+    if (invalidRange) {
+        return { ok: false, error: invalidRange.error };
+    }
+    if (developerUuid && !isCanonicalUuid(developerUuid)) {
+        return { ok: false, error: "developer_uuid must be a valid UUID" };
+    }
+    if (minServers.value !== null && maxServers.value !== null && minServers.value > maxServers.value) {
+        return { ok: false, error: "min_servers cannot be greater than max_servers" };
+    }
+    if (minPlayers.value !== null && maxPlayers.value !== null && minPlayers.value > maxPlayers.value) {
+        return { ok: false, error: "min_players cannot be greater than max_players" };
+    }
+
+    return {
+        ok: true,
+        filters: {
+            sort,
+            links,
+            developer_uuid: developerUuid,
+            min_servers: minServers.value,
+            max_servers: maxServers.value,
+            min_players: minPlayers.value,
+            max_players: maxPlayers.value
+        }
+    };
+}
+
+function isCanonicalUuid(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.trim());
+}
 
 function getLatestPluginVersionForServer(pluginsValue, pluginUUID) {
     if (typeof pluginsValue !== "string" || !pluginsValue.trim()) {
@@ -128,29 +229,20 @@ router.post("/add-plugin", requireSession, (req, res) => {
         ? false
         : req.body.is_unlisted;
 
-    if (typeof name !== "string" || !name.trim()) {
-        return res.status(400).json({ error: "Missing name field" });
-    }
     if (typeof initialIsUnlisted !== "boolean") {
         return res.status(400).json({ error: "is_unlisted must be a boolean" });
     }
 
-    const pluginName = name.trim();
-    if (pluginName.length > 32) {
-        return res.status(400).json({
-            error: "Plugin name must be 32 characters or fewer",
-            error_code: "name_too_long",
-            field: "name",
-            max_length: 32
+    const nameValidation = validatePluginName(name);
+    if (!nameValidation.ok) {
+        return res.status(nameValidation.status || 400).json({
+            error: nameValidation.error,
+            error_code: nameValidation.error_code,
+            field: nameValidation.field,
+            max_length: nameValidation.max_length
         });
     }
-    if (badwords.check(pluginName)) {
-        return res.status(400).json({
-            error: "Plugin name contains inappropriate language",
-            error_code: "inappropriate_language",
-            field: "name"
-        });
-    }
+    const pluginName = nameValidation.name;
 
     const ownedPlugins = getPluginsAccess(req.account.id)
         .filter(pluginId => typeof pluginId === "string" && pluginId.trim().length > 0);
@@ -335,6 +427,45 @@ router.post("/apply-plugin-links", requireSession, (req, res) => {
     });
 });
 
+router.post("/apply-plugin-name", requireSession, (req, res) => {
+    const inputUuid = typeof req.body?.plugin_uuid === "string" ? req.body.plugin_uuid.trim() : "";
+    if (!inputUuid) {
+        return res.status(400).json({ error: "Missing plugin_uuid field" });
+    }
+
+    const nameValidation = validatePluginName(req.body?.name);
+    if (!nameValidation.ok) {
+        return res.status(nameValidation.status || 400).json({
+            error: nameValidation.error,
+            error_code: nameValidation.error_code,
+            field: nameValidation.field,
+            max_length: nameValidation.max_length
+        });
+    }
+
+    const plugin = getPluginByAnyUUID(inputUuid);
+    if (!plugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const pluginAccess = getPluginsAccess(req.account.id);
+    if (!pluginAccess.includes(plugin.uuid)) {
+        return res.status(403).json({ error: "Cannot rename a plugin you do not have access to" });
+    }
+
+    const updatedPlugin = setPluginName(plugin.uuid, nameValidation.name);
+    if (!updatedPlugin) {
+        return res.status(404).json({ error: "Plugin not found" });
+    }
+
+    const publicPlugin = toPublicPlugin(updatedPlugin);
+    return res.json({
+        status: "success",
+        plugin_uuid: publicPlugin.uuid,
+        name: publicPlugin.name
+    });
+});
+
 router.post("/apply-plugin-visibility", requireSession, (req, res) => {
     const inputUuid = typeof req.body?.plugin_uuid === "string" ? req.body.plugin_uuid.trim() : "";
     if (!inputUuid) {
@@ -372,6 +503,11 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
     const searchTerm = typeof req.query.search === "string" ? req.query.search : "";
     const maxResults = Math.max(1, Math.min(parseInt(req.query.max, 10) || 51, 51));
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const filterResult = parseListPluginFilters(req.query || {});
+    if (!filterResult.ok) {
+        return res.status(400).json({ error: filterResult.error });
+    }
+    const filters = filterResult.filters;
     const viewerPrivatePluginAccess = req.account
         ? getPluginsAccess(req.account.id)
             .map((value) => String(value || "").trim())
@@ -380,22 +516,74 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
     const allPlugins = getAllPlugins(searchTerm)
         .filter((plugin) => canViewerSeePlugin(plugin, viewerPrivatePluginAccess));
 
-    const pluginRows = allPlugins.map((plugin) => {
+    let pluginRows = allPlugins.map((plugin) => {
         const serversUsing = getServersUsingPlugin(plugin.uuid);
+        const owner = getAccountThatOwnsPlugin(plugin.uuid);
         return {
             plugin,
+            owner,
             serversUsingCount: serversUsing.length,
             totalPlayers: serversUsing.reduce((sum, server) => sum + server.players_online, 0)
         };
     });
 
+    pluginRows = pluginRows.filter(({ plugin, owner, serversUsingCount, totalPlayers }) => {
+        const hasGithub = typeof plugin.github_link === "string" && plugin.github_link.trim();
+        const hasCurseforge = typeof plugin.curseforge_link === "string" && plugin.curseforge_link.trim();
+
+        if (filters.developer_uuid && owner?.id !== filters.developer_uuid) {
+            return false;
+        }
+        if (filters.links === "github" && !hasGithub) {
+            return false;
+        }
+        if (filters.links === "curseforge" && !hasCurseforge) {
+            return false;
+        }
+        if (filters.links === "with_any" && !hasGithub && !hasCurseforge) {
+            return false;
+        }
+        if (filters.links === "none" && (hasGithub || hasCurseforge)) {
+            return false;
+        }
+        if (filters.min_servers !== null && serversUsingCount < filters.min_servers) {
+            return false;
+        }
+        if (filters.max_servers !== null && serversUsingCount > filters.max_servers) {
+            return false;
+        }
+        if (filters.min_players !== null && totalPlayers < filters.min_players) {
+            return false;
+        }
+        if (filters.max_players !== null && totalPlayers > filters.max_players) {
+            return false;
+        }
+
+        return true;
+    });
+
     // Global ranking by usage before pagination.
     pluginRows.sort((a, b) => {
-        if (b.serversUsingCount !== a.serversUsingCount) {
+        if (filters.sort === "name") {
+            const nameCompare = String(a.plugin.name || "").localeCompare(String(b.plugin.name || ""));
+            if (nameCompare !== 0) {
+                return nameCompare;
+            }
+        } else if (filters.sort === "newest") {
+            const addedA = String(a.plugin.added_on || "");
+            const addedB = String(b.plugin.added_on || "");
+            if (addedA !== addedB) {
+                return addedB.localeCompare(addedA);
+            }
+        } else if (filters.sort === "players") {
+            if (b.totalPlayers !== a.totalPlayers) {
+                return b.totalPlayers - a.totalPlayers;
+            }
+        } else if (b.serversUsingCount !== a.serversUsingCount) {
             return b.serversUsingCount - a.serversUsingCount;
         }
 
-        // Keep newest plugins first when server counts are tied.
+        // Keep newest plugins first when primary sort values are tied.
         const addedA = String(a.plugin.added_on || "");
         const addedB = String(b.plugin.added_on || "");
         if (addedA !== addedB) {
@@ -412,29 +600,32 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
     const pageRows = pluginRows.slice(pageOffset, pageOffset + maxResults);
 
     const response = {};
-    pageRows.forEach(({ plugin, serversUsingCount, totalPlayers }) => {
+    pageRows.forEach(({ plugin, owner, serversUsingCount, totalPlayers }) => {
         const publicPlugin = toPublicPlugin(plugin);
         response[publicPlugin.uuid] = {
             plugin_info: publicPlugin,
             servers_using: serversUsingCount,
             total_players: totalPlayers,
             daily_stats: getPluginDailyStatsLastDays(plugin.uuid),
-            developer_info: (() => {
-                const account = getAccountThatOwnsPlugin(plugin.uuid);
-                if (account) {
-                    return {
-                        username: account.username?.trim() || "No Name",
-                        github_link: account.github_link || "",
-                        curseforge_link: account.curseforge_link || ""
-                    };
-                } else {
-                    return null;
+            developer_info: owner
+                ? {
+                    id: owner.id,
+                    username: owner.username?.trim() || "No Name",
+                    github_link: owner.github_link || "",
+                    curseforge_link: owner.curseforge_link || ""
                 }
-            })(),
+                : null,
             pages: totalPages
         };
     });
-    res.status(200).json({ plugins: response });
+    res.status(200).json({
+        plugins: response,
+        page,
+        max: maxResults,
+        total_plugins: totalPlugins,
+        total_pages: totalPages,
+        filters
+    });
 });
 
 router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
