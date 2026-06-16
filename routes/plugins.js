@@ -22,7 +22,7 @@ import optionalSession from '../middleware/optionalSession.js';
 import { addPluginToUser, getAccountThatOwnsPlugin, getPluginsAccess, removePluginFromAllAccounts, replacePluginAccessUuid } from '../databases/accountsdb.js';
 import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays, replacePluginStatsUuid } from '../databases/pluginstatsdb.js';
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
-import { MAX_PLUGINS_PER_USER, PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS } from '../config.js';
+import { MAX_PLUGINS_PER_USER, PLUGIN_HISTORY_DAYS, PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS } from '../config.js';
 import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
 
 const router = express.Router();
@@ -736,6 +736,7 @@ router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
         total_servers: totalServers,
         total_players: totalPlayers,
         history: getPluginDailyStatsLastDays(privatePluginUUID),
+        history_retention_days: PLUGIN_HISTORY_DAYS,
         all_time_peak: getPluginAllTimePeak(privatePluginUUID),
         versions: versions,
         co_plugins: coPlugins,
