@@ -5,13 +5,16 @@ import en from "bad-words-next/lib/en";
 import {
     createAccount,
     createDiscordAccount,
+    createHytaleAccount,
     getAccountById,
     getAccountByDiscordId,
     getAccountByEmail,
+    getAccountByHytaleSubject,
     getAccountThatOwnsPlugin,
     getPluginsAccess,
     getSessionMaxAgeMs,
     linkDiscordToAccount,
+    linkHytaleToAccount,
     setAccountUsername,
     setCurseforgeLink,
     setGithubLink,
@@ -28,6 +31,14 @@ import requireSession from "../middleware/requireSession.js";
 import optionalSession from "../middleware/optionalSession.js";
 import { authRateLimiter, publicGetRateLimiter } from "../middleware/rateLimiters.js";
 import { EMAIL_MAX_LENGTH, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../config.js";
+import {
+    buildHytaleAuthorizationUrl,
+    createHytaleOAuthState,
+    exchangeHytaleCode,
+    fetchHytaleUserInfo,
+    normalizeHytaleIdentity,
+    verifyHytaleIdToken
+} from "../utils/hytaleOAuth.js";
 
 const router = express.Router();
 const RECAPTCHA_VERIFY_URL = "https://www.google.com/recaptcha/api/siteverify";
@@ -35,8 +46,30 @@ const DISCORD_OAUTH_AUTHORIZE_URL = "https://discord.com/oauth2/authorize";
 const DISCORD_OAUTH_TOKEN_URL = "https://discord.com/api/oauth2/token";
 const DISCORD_OAUTH_USER_URL = "https://discord.com/api/users/@me";
 const DISCORD_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
-const FRONTEND_ORIGIN = process.env.DISCORD_OAUTH_FRONTEND_ORIGIN
+const HYTALE_OAUTH_STATE_TTL_MS = 5 * 60 * 1000;
+const FRONTEND_ORIGIN = process.env.OAUTH_FRONTEND_ORIGIN
+    || process.env.DISCORD_OAUTH_FRONTEND_ORIGIN
     || (process.env.PRODUCTION === "true" ? "https://hstats.dev" : "http://localhost:5173");
+const HYTALE_SAFE_ERROR_CODES = new Set([
+    "access_denied",
+    "invalid_scope",
+    "invalid_request",
+    "invalid_grant",
+    "invalid_client",
+    "unauthorized_client",
+    "authorization_failed",
+    "token_exchange_failed",
+    "invalid_token_response",
+    "profile_fetch_failed",
+    "invalid_nonce",
+    "invalid_subject",
+    "invalid_profile",
+    "account_already_linked",
+    "account_link_failed",
+    "account_disabled",
+    "server_misconfigured",
+    "unexpected_error"
+]);
 const USERNAME_MIN_LENGTH = 3;
 const USERNAME_MAX_LENGTH = 24;
 const usernameBadWords = new BadWordsNext({ data: en });
@@ -169,21 +202,80 @@ function getDiscordRedirectUri(req) {
     return `${req.protocol}://${req.get("host")}${req.baseUrl}/oauth/discord/callback`;
 }
 
-function getFrontendReturnPath(rawPath) {
-    if (typeof rawPath !== "string" || !rawPath.startsWith("/") || rawPath.startsWith("//")) {
-        return "/";
+function getHytaleRedirectUri(req) {
+    if (typeof process.env.HYTALE_OAUTH_REDIRECT_URI === "string" && process.env.HYTALE_OAUTH_REDIRECT_URI.trim()) {
+        return process.env.HYTALE_OAUTH_REDIRECT_URI.trim();
     }
-    return rawPath;
+    return `${req.protocol}://${req.get("host")}${req.baseUrl}/oauth/hytale/callback`;
 }
 
-function buildFrontendRedirect(path, status, errorCode) {
+function getFrontendReturnPath(rawPath) {
+    if (typeof rawPath !== "string"
+        || rawPath.length > 2048
+        || !rawPath.startsWith("/")
+        || rawPath.startsWith("//")
+        || rawPath.includes("\\")
+        || /[\u0000-\u001f\u007f]/.test(rawPath)) {
+        return "/";
+    }
+
+    try {
+        const frontendOrigin = new URL(FRONTEND_ORIGIN).origin;
+        const target = new URL(rawPath, frontendOrigin);
+        if (target.origin !== frontendOrigin) {
+            return "/";
+        }
+        return `${target.pathname}${target.search}${target.hash}`;
+    } catch {
+        return "/";
+    }
+}
+
+function setOauthResponseHeaders(res) {
+    res.set("Cache-Control", "no-store");
+    res.set("Referrer-Policy", "no-referrer");
+}
+
+function buildFrontendRedirect(path, provider, status, errorCode) {
     const target = new URL(path, FRONTEND_ORIGIN);
-    target.searchParams.set("oauth_provider", "discord");
+    target.searchParams.set("oauth_provider", provider);
     target.searchParams.set("oauth_status", status);
     if (errorCode) {
         target.searchParams.set("oauth_error", errorCode);
     }
     return target.toString();
+}
+
+function isHytaleOauthConfigured() {
+    return Boolean(typeof process.env.HYTALE_OAUTH_CLIENT_ID === "string"
+        && process.env.HYTALE_OAUTH_CLIENT_ID.trim()
+        && typeof process.env.HYTALE_OAUTH_SECRET === "string"
+        && process.env.HYTALE_OAUTH_SECRET.trim());
+}
+
+function normalizeHytaleAuthorizationError(value, fallback = "unexpected_error") {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return HYTALE_SAFE_ERROR_CODES.has(normalized) ? normalized : fallback;
+}
+
+function establishOauthSession(req, accountId) {
+    return new Promise((resolve, reject) => {
+        req.session.regenerate((regenerateError) => {
+            if (regenerateError) {
+                reject(regenerateError);
+                return;
+            }
+            req.session.accountId = accountId;
+            req.session.cookie.maxAge = getSessionMaxAgeMs();
+            req.session.save((saveError) => {
+                if (saveError) {
+                    reject(saveError);
+                    return;
+                }
+                resolve();
+            });
+        });
+    });
 }
 
 function getDiscordDisplayName(profile) {
@@ -280,6 +372,34 @@ function resolveAccountForDiscordProfile(profile) {
         discordUsername,
         email: verifiedEmail
     });
+}
+
+function resolveAccountForHytaleIdentity(identity, linkAccountId = "") {
+    const existingByHytale = getAccountByHytaleSubject(identity.subject);
+    const normalizedLinkAccountId = typeof linkAccountId === "string" ? linkAccountId.trim() : "";
+
+    if (normalizedLinkAccountId) {
+        const linkTarget = getAccountById(normalizedLinkAccountId);
+        if (!linkTarget) {
+            return { error: "Account link target not found" };
+        }
+        if (linkTarget.is_disabled) {
+            return linkTarget;
+        }
+        if (existingByHytale && existingByHytale.id !== linkTarget.id) {
+            return { error: "Hytale account already linked" };
+        }
+        return linkHytaleToAccount(linkTarget.id, identity);
+    }
+
+    if (existingByHytale) {
+        if (existingByHytale.is_disabled) {
+            return existingByHytale;
+        }
+        return linkHytaleToAccount(existingByHytale.id, identity);
+    }
+
+    return createHytaleAccount(identity);
 }
 
 async function verifyRecaptcha(recaptchaToken, remoteIp) {
@@ -411,6 +531,7 @@ router.post("/login", authRateLimiter, (req, res) => {
 });
 
 router.get("/oauth/discord/start", authRateLimiter, (req, res) => {
+    setOauthResponseHeaders(res);
     if (!isDiscordOauthConfigured()) {
         return res.status(500).json({ error: "Discord OAuth is not configured on the server" });
     }
@@ -439,6 +560,7 @@ router.get("/oauth/discord/start", authRateLimiter, (req, res) => {
 });
 
 router.get("/oauth/discord/callback", authRateLimiter, async (req, res) => {
+    setOauthResponseHeaders(res);
     const oauthState = req.session?.discordOAuth;
     const returnPath = getFrontendReturnPath(oauthState?.return_path);
     req.session.discordOAuth = null;
@@ -453,40 +575,152 @@ router.get("/oauth/discord/callback", authRateLimiter, async (req, res) => {
         && oauthState.state === state;
 
     if (!stateIsValid) {
-        return res.redirect(buildFrontendRedirect(returnPath, "error", "invalid_state"));
+        return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "invalid_state"));
     }
     if (!code) {
-        return res.redirect(buildFrontendRedirect(returnPath, "error", "missing_code"));
+        return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "missing_code"));
     }
     if (!isDiscordOauthConfigured()) {
-        return res.redirect(buildFrontendRedirect(returnPath, "error", "server_misconfigured"));
+        return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "server_misconfigured"));
     }
 
     try {
         const accessToken = await exchangeDiscordCodeForToken(code, getDiscordRedirectUri(req));
         if (!accessToken) {
-            return res.redirect(buildFrontendRedirect(returnPath, "error", "token_exchange_failed"));
+            return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "token_exchange_failed"));
         }
 
         const profile = await fetchDiscordProfile(accessToken);
         if (!profile) {
-            return res.redirect(buildFrontendRedirect(returnPath, "error", "profile_fetch_failed"));
+            return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "profile_fetch_failed"));
         }
 
         const account = resolveAccountForDiscordProfile(profile);
         if (!account || account?.error) {
-            return res.redirect(buildFrontendRedirect(returnPath, "error", "account_link_failed"));
+            return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "account_link_failed"));
         }
         if (account.is_disabled) {
-            return res.redirect(buildFrontendRedirect(returnPath, "error", "account_disabled"));
+            return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "account_disabled"));
         }
 
-        req.session.accountId = account.id;
-        req.session.cookie.maxAge = getSessionMaxAgeMs();
+        await establishOauthSession(req, account.id);
         touchLastLogin(account.id);
-        return res.redirect(buildFrontendRedirect(returnPath, "success"));
+        return res.redirect(buildFrontendRedirect(returnPath, "discord", "success"));
     } catch (error) {
-        return res.redirect(buildFrontendRedirect(returnPath, "error", "unexpected_error"));
+        return res.redirect(buildFrontendRedirect(returnPath, "discord", "error", "unexpected_error"));
+    }
+});
+
+router.get("/oauth/hytale/start", authRateLimiter, (req, res) => {
+    setOauthResponseHeaders(res);
+    if (!isHytaleOauthConfigured()) {
+        return res.status(500).json({ error: "Hytale OAuth is not configured on the server" });
+    }
+
+    const oauth = createHytaleOAuthState();
+    const returnPath = getFrontendReturnPath(req.query?.return_to);
+    req.session.hytaleOAuth = {
+        state: oauth.state,
+        nonce: oauth.nonce,
+        verifier: oauth.verifier,
+        expires_at: Date.now() + HYTALE_OAUTH_STATE_TTL_MS,
+        return_path: returnPath,
+        link_account_id: typeof req.session.accountId === "string" ? req.session.accountId : ""
+    };
+
+    const authorizationUrl = buildHytaleAuthorizationUrl({
+        clientId: process.env.HYTALE_OAUTH_CLIENT_ID.trim(),
+        redirectUri: getHytaleRedirectUri(req),
+        state: oauth.state,
+        nonce: oauth.nonce,
+        challenge: oauth.challenge
+    });
+
+    if (req.query?.mode === "json") {
+        return res.json({ authorization_url: authorizationUrl });
+    }
+
+    return res.redirect(authorizationUrl);
+});
+
+router.get("/oauth/hytale/callback", authRateLimiter, async (req, res) => {
+    setOauthResponseHeaders(res);
+    const oauthState = req.session?.hytaleOAuth;
+    const returnPath = getFrontendReturnPath(oauthState?.return_path);
+    req.session.hytaleOAuth = null;
+
+    const state = typeof req.query?.state === "string" ? req.query.state : "";
+    const stateIsValid = oauthState
+        && typeof oauthState.state === "string"
+        && oauthState.state
+        && typeof oauthState.nonce === "string"
+        && oauthState.nonce
+        && typeof oauthState.verifier === "string"
+        && oauthState.verifier
+        && typeof oauthState.expires_at === "number"
+        && oauthState.expires_at > Date.now()
+        && oauthState.state === state;
+
+    if (!stateIsValid) {
+        return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", "invalid_state"));
+    }
+
+    const authorizationError = typeof req.query?.error === "string" ? req.query.error : "";
+    if (authorizationError) {
+        return res.redirect(buildFrontendRedirect(
+            returnPath,
+            "hytale",
+            "error",
+            normalizeHytaleAuthorizationError(authorizationError, "authorization_failed")
+        ));
+    }
+
+    const code = typeof req.query?.code === "string" ? req.query.code : "";
+    if (!code) {
+        return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", "missing_code"));
+    }
+    if (!isHytaleOauthConfigured()) {
+        return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", "server_misconfigured"));
+    }
+
+    try {
+        const clientId = process.env.HYTALE_OAUTH_CLIENT_ID.trim();
+        const tokens = await exchangeHytaleCode({
+            clientId,
+            clientSecret: process.env.HYTALE_OAUTH_SECRET.trim(),
+            code,
+            redirectUri: getHytaleRedirectUri(req),
+            verifier: oauthState.verifier
+        });
+        const idTokenClaims = await verifyHytaleIdToken({
+            idToken: tokens.id_token,
+            clientId,
+            nonce: oauthState.nonce
+        });
+        const userInfoClaims = await fetchHytaleUserInfo(tokens.access_token);
+        const identity = normalizeHytaleIdentity(idTokenClaims, userInfoClaims);
+        if (identity.error) {
+            return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", identity.error));
+        }
+
+        const account = resolveAccountForHytaleIdentity(identity, oauthState.link_account_id);
+        if (!account || account.error) {
+            const errorCode = account?.error === "Hytale account already linked"
+                ? "account_already_linked"
+                : "account_link_failed";
+            return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", errorCode));
+        }
+        if (account.is_disabled) {
+            return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", "account_disabled"));
+        }
+
+        await establishOauthSession(req, account.id);
+        touchLastLogin(account.id);
+        return res.redirect(buildFrontendRedirect(returnPath, "hytale", "success"));
+    } catch (error) {
+        const errorCode = normalizeHytaleAuthorizationError(error?.oauthCode, "unexpected_error");
+        console.error(`Hytale OAuth callback failed: ${error?.message || "Unknown error"}`);
+        return res.redirect(buildFrontendRedirect(returnPath, "hytale", "error", errorCode));
     }
 });
 

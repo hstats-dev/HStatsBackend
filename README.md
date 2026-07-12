@@ -12,15 +12,15 @@ It receives anonymous server heartbeats from Hytale servers, tracks plugin usage
 - Tracks plugin usage by private server reporting keys.
 - Exposes public plugin, developer, embed, and global stats endpoints.
 - Stores hourly global and plugin history.
-- Supports account sessions, Discord OAuth, reCAPTCHA-protected registration, and plugin management.
+- Supports account sessions, Hytale OpenID Connect, Discord OAuth, reCAPTCHA-protected registration, and plugin management.
 - Provides Discord admin commands for maintenance, repairs, backups, and support tooling.
 - Generates SVG stat cards for plugins and developer profiles.
 
 ## Privacy Model
 
-HStats is designed to collect aggregate mod usage data, not player identity.
+HStats telemetry is designed to collect aggregate mod usage data, not player identity. Players who explicitly use Hytale login provide the selected public game profile as account authentication data.
 
-The backend does not collect:
+Server telemetry does not collect:
 
 - Player usernames.
 - Player IP addresses.
@@ -34,6 +34,7 @@ The backend does collect:
 - Plugin reporting UUIDs and plugin versions.
 - Operating system, Java version, CPU core count, and country-level region.
 - Account data required for dashboard login and plugin ownership.
+- For Hytale login, a protected lookup derived from the application-specific Hytale subject plus the selected public profile UUID and username.
 
 ## Public and Private Plugin UUIDs
 
@@ -112,6 +113,10 @@ Optional integrations:
 
 - `DISCORD_OAUTH_CLIENT_ID`
 - `DISCORD_OAUTH_CLIENT_SECRET`
+- `HYTALE_OAUTH_CLIENT_ID`
+- `HYTALE_OAUTH_SECRET`
+- `HYTALE_OAUTH_REDIRECT_URI`
+- `OAUTH_FRONTEND_ORIGIN`
 - `DISCORD_BACKUP_WEBHOOK`
 - `SITE_LOGS_WEBHOOK`
 
@@ -157,6 +162,7 @@ Additional API notes live in `docs/`:
 - `docs/important-date-markers.md`
 - `docs/account-usernames-and-plugin-links.md`
 - `docs/discord-oauth.md`
+- `docs/hytale-oauth.md`
 
 ## Security
 
@@ -170,4 +176,3 @@ Do not publish:
 - Discord bot tokens
 - reCAPTCHA secret keys
 - account encryption keys
-

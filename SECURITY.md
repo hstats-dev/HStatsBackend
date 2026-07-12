@@ -52,8 +52,8 @@ Before production deployment:
 - Set `PRODUCTION=true`.
 - Rotate leaked private plugin UUIDs from the dashboard or admin tooling.
 - Rotate Discord webhooks and bot tokens if they are ever exposed.
+- Rotate the Hytale OAuth client secret if it is ever exposed.
 
 ## Git History
 
 If sensitive files were ever committed, removing them from the current tree is not enough. Purge them from Git history and rotate any affected secrets.
-

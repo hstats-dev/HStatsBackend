@@ -17,6 +17,9 @@ db.exec(`
         username TEXT DEFAULT '',
         discord_id TEXT,
         discord_username TEXT DEFAULT '',
+        hytale_sub_hash TEXT,
+        hytale_profile_uuid TEXT,
+        hytale_username TEXT DEFAULT '',
         plugin_access TEXT DEFAULT '',
         is_disabled INTEGER DEFAULT 0,
         created_at INTEGER,
@@ -40,7 +43,11 @@ ensureColumn("accounts", "curseforge_link", "TEXT");
 ensureColumn("accounts", "username", "TEXT DEFAULT ''");
 ensureColumn("accounts", "discord_id", "TEXT");
 ensureColumn("accounts", "discord_username", "TEXT DEFAULT ''");
+ensureColumn("accounts", "hytale_sub_hash", "TEXT");
+ensureColumn("accounts", "hytale_profile_uuid", "TEXT");
+ensureColumn("accounts", "hytale_username", "TEXT DEFAULT ''");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_discord_id ON accounts(discord_id) WHERE discord_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_hytale_sub_hash ON accounts(hytale_sub_hash) WHERE hytale_sub_hash IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_username_nocase ON accounts(username COLLATE NOCASE) WHERE username IS NOT NULL AND username <> ''");
 
 function getEnvKey(name, bytes) {
@@ -71,6 +78,10 @@ function normalizeEmail(email) {
 
 function hmacLookup(value) {
     return crypto.createHmac("sha256", HMAC_KEY).update(value).digest("hex");
+}
+
+function hytaleSubjectLookup(subject) {
+    return hmacLookup(`hytale-sub:${subject}`);
 }
 
 function encryptString(value) {
@@ -170,6 +181,44 @@ function createDiscordAccount({ discordId, discordUsername, email }) {
         null,
         discordId,
         discordUsername || "",
+        "",
+        now,
+        now
+    );
+
+    return getAccountById(id);
+}
+
+function createHytaleAccount({ subject, profileUuid, profileUsername }) {
+    const normalizedSubject = typeof subject === "string" ? subject.trim() : "";
+    if (!normalizedSubject) {
+        return { error: "Invalid Hytale subject" };
+    }
+
+    const subjectHash = hytaleSubjectLookup(normalizedSubject);
+    const existing = db.prepare("SELECT id FROM accounts WHERE hytale_sub_hash = ?").get(subjectHash);
+    if (existing) {
+        return { error: "Hytale account already linked" };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const id = crypto.randomUUID();
+    db.prepare(`
+        INSERT INTO accounts (
+            id,
+            hytale_sub_hash,
+            hytale_profile_uuid,
+            hytale_username,
+            plugin_access,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        id,
+        subjectHash,
+        profileUuid || null,
+        profileUsername || "",
         "",
         now,
         now
@@ -378,6 +427,15 @@ function getAccountByDiscordId(discordId) {
     return db.prepare("SELECT * FROM accounts WHERE discord_id = ?").get(discordId);
 }
 
+function getAccountByHytaleSubject(subject) {
+    const normalizedSubject = typeof subject === "string" ? subject.trim() : "";
+    if (!normalizedSubject) {
+        return undefined;
+    }
+    return db.prepare("SELECT * FROM accounts WHERE hytale_sub_hash = ?")
+        .get(hytaleSubjectLookup(normalizedSubject));
+}
+
 function getAccountByUsername(username) {
     if (typeof username !== "string") {
         return undefined;
@@ -397,6 +455,32 @@ function linkDiscordToAccount(accountId, { discordId, discordUsername }) {
     const now = Math.floor(Date.now() / 1000);
     db.prepare("UPDATE accounts SET discord_id = ?, discord_username = ?, updated_at = ? WHERE id = ?")
         .run(discordId, discordUsername || "", now, accountId);
+    return getAccountById(accountId);
+}
+
+function linkHytaleToAccount(accountId, { subject, profileUuid, profileUsername }) {
+    const normalizedSubject = typeof subject === "string" ? subject.trim() : "";
+    if (!normalizedSubject) {
+        return { error: "Invalid Hytale subject" };
+    }
+
+    const existing = getAccountByHytaleSubject(normalizedSubject);
+    if (existing && existing.id !== accountId) {
+        return { error: "Hytale account already linked" };
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(`
+        UPDATE accounts
+        SET hytale_sub_hash = ?, hytale_profile_uuid = ?, hytale_username = ?, updated_at = ?
+        WHERE id = ?
+    `).run(
+        hytaleSubjectLookup(normalizedSubject),
+        profileUuid || null,
+        profileUsername || "",
+        now,
+        accountId
+    );
     return getAccountById(accountId);
 }
 
@@ -467,6 +551,9 @@ function toSafeAccount(accountRow) {
         last_login: accountRow.last_login,
         discord_connected: !!accountRow.discord_id,
         discord_username: accountRow.discord_username || "",
+        hytale_connected: !!accountRow.hytale_sub_hash,
+        hytale_profile_uuid: accountRow.hytale_profile_uuid || "",
+        hytale_username: accountRow.hytale_username || "",
         github_link: accountRow.github_link || "",
         curseforge_link: accountRow.curseforge_link || ""
     };
@@ -489,9 +576,12 @@ export {
     getAccountById,
     getAccountByEmail,
     getAccountByDiscordId,
+    getAccountByHytaleSubject,
     getAccountByUsername,
     createDiscordAccount,
+    createHytaleAccount,
     linkDiscordToAccount,
+    linkHytaleToAccount,
     syncEmailIfMissing,
     verifyPassword,
     updatePassword,
