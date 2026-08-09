@@ -6,7 +6,7 @@ HStats uses Hytale's confidential Authorization Code flow with PKCE. The client 
 
 Register these redirect URIs in the Hytale developer portal:
 
-- Production: `https://hstats.dev/api/account/oauth/hytale/callback`
+- Production: `https://api.hstats.dev/api/account/oauth/hytale/callback`
 - Local development: `http://localhost:3000/api/account/oauth/hytale/callback`
 
 The Discord callback paths are not valid for the Hytale flow because HStats has separate provider-specific callbacks.
@@ -23,7 +23,7 @@ OAUTH_FRONTEND_ORIGIN=http://localhost:5173
 Production should use:
 
 ```env
-HYTALE_OAUTH_REDIRECT_URI=https://hstats.dev/api/account/oauth/hytale/callback
+HYTALE_OAUTH_REDIRECT_URI=https://api.hstats.dev/api/account/oauth/hytale/callback
 OAUTH_FRONTEND_ORIGIN=https://hstats.dev
 ```
 

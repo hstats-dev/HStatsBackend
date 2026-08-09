@@ -13,6 +13,8 @@ db.exec(`
         name TEXT,
         github_link TEXT DEFAULT '',
         curseforge_link TEXT DEFAULT '',
+        modtale_link TEXT DEFAULT '',
+        modifold_link TEXT DEFAULT '',
         is_unlisted INTEGER DEFAULT 0,
         last_private_uuid_refresh_at INTEGER DEFAULT 0,
         added_on TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -90,6 +92,8 @@ function normalizePublicUuids() {
 ensureColumn("plugins", "public_uuid", "TEXT");
 ensureColumn("plugins", "github_link", "TEXT DEFAULT ''");
 ensureColumn("plugins", "curseforge_link", "TEXT DEFAULT ''");
+ensureColumn("plugins", "modtale_link", "TEXT DEFAULT ''");
+ensureColumn("plugins", "modifold_link", "TEXT DEFAULT ''");
 ensureColumn("plugins", "is_unlisted", "INTEGER DEFAULT 0");
 ensureColumn("plugins", "last_private_uuid_refresh_at", "INTEGER DEFAULT 0");
 normalizePublicUuids();
@@ -171,7 +175,9 @@ function toPublicPlugin(pluginRow, { includePrivate = false } = {}) {
         public_uuid: publicUuid,
         is_unlisted: Number(pluginRow.is_unlisted) === 1,
         github_link: pluginRow.github_link || "",
-        curseforge_link: pluginRow.curseforge_link || ""
+        curseforge_link: pluginRow.curseforge_link || "",
+        modtale_link: pluginRow.modtale_link || "",
+        modifold_link: pluginRow.modifold_link || ""
     };
     if (includePrivate) {
         mapped.private_uuid = pluginRow.uuid;
@@ -181,7 +187,7 @@ function toPublicPlugin(pluginRow, { includePrivate = false } = {}) {
     return mapped;
 }
 
-function setPluginLinks(privateUuid, { githubLink, curseforgeLink } = {}) {
+function setPluginLinks(privateUuid, { githubLink, curseforgeLink, modtaleLink, modifoldLink } = {}) {
     const current = getPlugin(privateUuid);
     if (!current) {
         return null;
@@ -193,9 +199,15 @@ function setPluginLinks(privateUuid, { githubLink, curseforgeLink } = {}) {
     const nextCurseforge = curseforgeLink === undefined
         ? (current.curseforge_link || "")
         : (curseforgeLink || "");
+    const nextModtale = modtaleLink === undefined
+        ? (current.modtale_link || "")
+        : (modtaleLink || "");
+    const nextModifold = modifoldLink === undefined
+        ? (current.modifold_link || "")
+        : (modifoldLink || "");
 
-    db.prepare("UPDATE plugins SET github_link = ?, curseforge_link = ? WHERE uuid = ?")
-        .run(nextGithub, nextCurseforge, privateUuid);
+    db.prepare("UPDATE plugins SET github_link = ?, curseforge_link = ?, modtale_link = ?, modifold_link = ? WHERE uuid = ?")
+        .run(nextGithub, nextCurseforge, nextModtale, nextModifold, privateUuid);
 
     return getPlugin(privateUuid);
 }

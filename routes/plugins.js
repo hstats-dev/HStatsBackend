@@ -24,12 +24,13 @@ import { deletePluginStats, getPluginAllTimePeak, getPluginDailyStatsLastDays, r
 import { addToRecentActivity, MessageType } from '../databases/liveActivity.js';
 import { MAX_PLUGINS_PER_USER, PLUGIN_HISTORY_DAYS, PLUGIN_PRIVATE_UUID_REFRESH_COOLDOWN_SECONDS } from '../config.js';
 import { heavyGetRateLimiter } from '../middleware/rateLimiters.js';
+import { getMarketplaceDownloadCounts } from '../utils/marketplaceDownloads.js';
 
 const router = express.Router();
 const badwords = new BadWordsNext({ data: en });
 const PLUGIN_NAME_MAX_LENGTH = 32;
 const LIST_PLUGIN_SORTS = new Set(["popular", "players", "newest", "name"]);
-const LIST_PLUGIN_LINK_FILTERS = new Set(["any", "with_any", "github", "curseforge", "none"]);
+const LIST_PLUGIN_LINK_FILTERS = new Set(["any", "with_any", "github", "curseforge", "modtale", "modifold", "none"]);
 
 function validatePluginName(name) {
     if (typeof name !== "string" || !name.trim()) {
@@ -90,7 +91,7 @@ function parseListPluginFilters(query = {}) {
         return { ok: false, error: "sort must be one of: popular, players, newest, name" };
     }
     if (!LIST_PLUGIN_LINK_FILTERS.has(links)) {
-        return { ok: false, error: "links must be one of: any, with_any, github, curseforge, none" };
+        return { ok: false, error: "links must be one of: any, with_any, github, curseforge, modtale, modifold, none" };
     }
 
     const invalidRange = [minServers, maxServers, minPlayers, maxPlayers].find((result) => !result.ok);
@@ -200,9 +201,25 @@ function validateOptionalPluginLink(value, kind) {
         const host = parsedUrl.hostname.toLowerCase();
         const pathname = parsedUrl.pathname;
         const isAllowedHost = host === "www.curseforge.com" || host === "curseforge.com";
-        const hasValidPathPrefix = /^\/hytale\/mods\/[^/]+/i.test(pathname);
-        if (!isAllowedHost || !hasValidPathPrefix) {
+        const hasValidPath = /^\/hytale\/mods\/[^/]+\/?$/i.test(pathname);
+        if (parsedUrl.protocol !== "https:" || !isAllowedHost || !hasValidPath) {
             return { ok: false, error: "Invalid CurseForge mod link. Expected https://www.curseforge.com/hytale/mods/<mod-name>" };
+        }
+    }
+    if (kind === "modtale" || kind === "modifold") {
+        let parsedUrl = null;
+        try {
+            parsedUrl = new URL(trimmed);
+        } catch {
+            return { ok: false, error: `Invalid ${kind === "modtale" ? "Modtale" : "Modifold"} link` };
+        }
+
+        const expectedHost = kind === "modtale" ? "modtale.net" : "modifold.com";
+        const host = parsedUrl.hostname.toLowerCase().replace(/^www\./, "");
+        const hasValidPath = /^\/mod\/[^/]+\/?$/i.test(parsedUrl.pathname);
+        if (parsedUrl.protocol !== "https:" || host !== expectedHost || !hasValidPath) {
+            const platform = kind === "modtale" ? "Modtale" : "Modifold";
+            return { ok: false, error: `Invalid ${platform} mod link. Expected https://${expectedHost}/mod/<mod-name>` };
         }
     }
 
@@ -403,14 +420,24 @@ router.post("/apply-plugin-links", requireSession, (req, res) => {
     if (!curseforgeResult.ok) {
         return res.status(400).json({ error: curseforgeResult.error });
     }
+    const modtaleResult = validateOptionalPluginLink(req.body?.modtale_link, "modtale");
+    if (!modtaleResult.ok) {
+        return res.status(400).json({ error: modtaleResult.error });
+    }
+    const modifoldResult = validateOptionalPluginLink(req.body?.modifold_link, "modifold");
+    if (!modifoldResult.ok) {
+        return res.status(400).json({ error: modifoldResult.error });
+    }
 
-    if (githubResult.value === undefined && curseforgeResult.value === undefined) {
-        return res.status(400).json({ error: "Provide at least one of github_link or curseforge_link" });
+    if ([githubResult, curseforgeResult, modtaleResult, modifoldResult].every((result) => result.value === undefined)) {
+        return res.status(400).json({ error: "Provide at least one mod link" });
     }
 
     const updatedPlugin = setPluginLinks(plugin.uuid, {
         githubLink: githubResult.value,
-        curseforgeLink: curseforgeResult.value
+        curseforgeLink: curseforgeResult.value,
+        modtaleLink: modtaleResult.value,
+        modifoldLink: modifoldResult.value
     });
     if (!updatedPlugin) {
         return res.status(404).json({ error: "Plugin not found" });
@@ -422,7 +449,9 @@ router.post("/apply-plugin-links", requireSession, (req, res) => {
         plugin_uuid: publicPlugin.uuid,
         links: {
             github_link: publicPlugin.github_link || "",
-            curseforge_link: publicPlugin.curseforge_link || ""
+            curseforge_link: publicPlugin.curseforge_link || "",
+            modtale_link: publicPlugin.modtale_link || "",
+            modifold_link: publicPlugin.modifold_link || ""
         }
     });
 });
@@ -530,6 +559,9 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
     pluginRows = pluginRows.filter(({ plugin, owner, serversUsingCount, totalPlayers }) => {
         const hasGithub = typeof plugin.github_link === "string" && plugin.github_link.trim();
         const hasCurseforge = typeof plugin.curseforge_link === "string" && plugin.curseforge_link.trim();
+        const hasModtale = typeof plugin.modtale_link === "string" && plugin.modtale_link.trim();
+        const hasModifold = typeof plugin.modifold_link === "string" && plugin.modifold_link.trim();
+        const hasAnyLink = hasGithub || hasCurseforge || hasModtale || hasModifold;
 
         if (filters.developer_uuid && owner?.id !== filters.developer_uuid) {
             return false;
@@ -540,10 +572,16 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
         if (filters.links === "curseforge" && !hasCurseforge) {
             return false;
         }
-        if (filters.links === "with_any" && !hasGithub && !hasCurseforge) {
+        if (filters.links === "modtale" && !hasModtale) {
             return false;
         }
-        if (filters.links === "none" && (hasGithub || hasCurseforge)) {
+        if (filters.links === "modifold" && !hasModifold) {
+            return false;
+        }
+        if (filters.links === "with_any" && !hasAnyLink) {
+            return false;
+        }
+        if (filters.links === "none" && hasAnyLink) {
             return false;
         }
         if (filters.min_servers !== null && serversUsingCount < filters.min_servers) {
@@ -628,7 +666,7 @@ router.get("/list-plugins", optionalSession, heavyGetRateLimiter, (req, res) => 
     });
 });
 
-router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
+router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, async (req, res) => {
     if (!req.params.plugin_uuid)
         return res.status(400).json({ error: "Missing plugin_uuid parameter" });
 
@@ -639,6 +677,12 @@ router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
     const privatePluginUUID = plugin.uuid;
     const publicPlugin = toPublicPlugin(plugin);
     const servers = getServersUsingPlugin(privatePluginUUID);
+    const history = getPluginDailyStatsLastDays(privatePluginUUID);
+    const marketplaceDownloads = await getMarketplaceDownloadCounts({
+        curseforgeLink: publicPlugin.curseforge_link,
+        modtaleLink: publicPlugin.modtale_link,
+        modifoldLink: publicPlugin.modifold_link
+    });
 
     let totalServers = servers.length;
     let totalPlayers = 0;
@@ -731,11 +775,18 @@ router.get("/plugin-info/:plugin_uuid", heavyGetRateLimiter, (req, res) => {
         is_unlisted: publicPlugin.is_unlisted,
         links: {
             github_link: publicPlugin.github_link || "",
-            curseforge_link: publicPlugin.curseforge_link || ""
+            curseforge_link: publicPlugin.curseforge_link || "",
+            modtale_link: publicPlugin.modtale_link || "",
+            modifold_link: publicPlugin.modifold_link || ""
+        },
+        marketplace_downloads: {
+            ...(marketplaceDownloads.curseforge !== null ? { curseforge: marketplaceDownloads.curseforge } : {}),
+            ...(marketplaceDownloads.modtale !== null ? { modtale: marketplaceDownloads.modtale } : {}),
+            ...(marketplaceDownloads.modifold !== null ? { modifold: marketplaceDownloads.modifold } : {})
         },
         total_servers: totalServers,
         total_players: totalPlayers,
-        history: getPluginDailyStatsLastDays(privatePluginUUID),
+        history,
         history_retention_days: PLUGIN_HISTORY_DAYS,
         all_time_peak: getPluginAllTimePeak(privatePluginUUID),
         versions: versions,

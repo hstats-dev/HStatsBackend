@@ -143,7 +143,9 @@ function getManagedPluginSummaries(accountId, { includeUnlisted = false } = {}) 
             added_on: plugin.added_on || null,
             links: {
                 github_link: plugin.github_link || "",
-                curseforge_link: plugin.curseforge_link || ""
+                curseforge_link: plugin.curseforge_link || "",
+                modtale_link: plugin.modtale_link || "",
+                modifold_link: plugin.modifold_link || ""
             },
             servers_using: serversUsing.length,
             total_players: totalPlayers

@@ -8,6 +8,7 @@ import {
     AMOUNT_NEEDED_TO_DISPLAY,
     MAX_ACTIVE_SERVERS_PER_IP,
     MAX_PLAYERS_ONLINE_PER_SERVER,
+    PLUGIN_SERVER_USAGE_CACHE_MS,
     PLUGIN_HISTORY_RESIDUAL_SPIKE_MULTIPLIER,
     PLUGIN_HISTORY_SPIKE_MIN_PLAYERS_DELTA,
     PLUGIN_HISTORY_SPIKE_MIN_SERVERS_DELTA,
@@ -22,6 +23,7 @@ configDotenv();
 
 // Plugin Format: pluginUUID@version (version is optional)
 const db = betterSQL(process.env.SERVERS_DB);
+const pluginServerUsageCache = new Map();
 
 db.exec(`
     CREATE TABLE IF NOT EXISTS servers (
@@ -938,14 +940,34 @@ function getServersUsingPlugin(pluginUUID) {
         return [];
     }
 
+    const now = Date.now();
+    const cached = pluginServerUsageCache.get(pluginUUID);
+    if (cached && cached.expiresAt > now) {
+        return cached.servers;
+    }
+
     const stmt = db.prepare("SELECT * FROM servers WHERE plugins LIKE ?");
     const rows = stmt.all(`%${pluginUUID}%`);
-    return rows
+    const servers = rows
         .filter(row => getPluginUUIDsForServer(row.plugins).has(pluginUUID))
         .map(row => ({
             ...row,
             players_online: clampPlayerCount(row.players_online)
         }));
+
+    pluginServerUsageCache.set(pluginUUID, {
+        servers,
+        expiresAt: now + PLUGIN_SERVER_USAGE_CACHE_MS
+    });
+    if (pluginServerUsageCache.size > 1000) {
+        for (const [key, entry] of pluginServerUsageCache.entries()) {
+            if (entry.expiresAt <= now) {
+                pluginServerUsageCache.delete(key);
+            }
+        }
+    }
+
+    return servers;
 }
 
 function removePluginFromAllServers(pluginUUID) {
